@@ -32,3 +32,17 @@ class CallStartResponse(BaseModel):
 
     provider: str
     call: CallResponse
+
+
+class CallEvaluationResponse(BaseModel):
+    """Response for a stored call evaluation."""
+
+    schema_version: str
+    overall_score: int
+    technical_score: int
+    communication_score: int
+    experience_score: int
+    remarks: str
+    strengths: list[str]
+    weaknesses: list[str]
+    recommendation: str

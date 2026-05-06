@@ -14,6 +14,7 @@ from app.agents.question_generator_agent import (
     QuestionGeneratorAgent,
     get_question_generator_agent,
 )
+from app.agents.evaluation_agent import EvaluationAgent, get_evaluation_agent
 from app.config import get_settings
 from app.core.dependencies import get_current_user
 from app.core.exceptions import CallInProgressError, NotFoundError, ValidationError
@@ -23,7 +24,7 @@ from app.models.job import Job
 from app.models.question import InterviewQuestion
 from app.models.resume import Resume
 from app.models.user import User
-from app.schemas.call import CallResponse, CallStartResponse
+from app.schemas.call import CallEvaluationResponse, CallResponse, CallStartResponse
 from app.services.telephony import TelephonyService, get_telephony_service
 
 settings = get_settings()
@@ -164,3 +165,34 @@ async def get_call(
     if not call:
         raise NotFoundError(resource="Call")
     return call
+
+
+@router.post("/api/calls/{call_id}/evaluate", response_model=CallEvaluationResponse)
+async def evaluate_call(
+    call_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    evaluator: EvaluationAgent = Depends(get_evaluation_agent),
+):
+    """Evaluate a call transcript and persist the result onto the call record."""
+    result = await db.execute(
+        select(Call, Job, Resume)
+        .join(Job, Call.job_id == Job.id)
+        .join(Resume, Call.resume_id == Resume.id)
+        .where(Call.id == call_id, Job.user_id == current_user.id)
+    )
+    row = result.one_or_none()
+    if not row:
+        raise NotFoundError(resource="Call")
+
+    call, job, resume = row
+    if not call.transcript or not call.transcript.strip():
+        raise ValidationError("Call transcript is required before evaluation.")
+
+    evaluation = await evaluator.evaluate_call(call=call, job=job, resume=resume)
+    call.ai_evaluation = evaluation.model_dump()
+    if call.status == "queued":
+        call.status = "completed"
+    await db.flush()
+
+    return CallEvaluationResponse(**call.ai_evaluation)

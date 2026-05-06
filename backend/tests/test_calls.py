@@ -14,6 +14,7 @@ from app.agents.question_generator_agent import (
     QuestionGenerationResult,
     get_question_generator_agent,
 )
+from app.agents.evaluation_agent import get_evaluation_agent
 from app.main import app
 from app.models.call import Call
 from app.models.job import Job
@@ -55,13 +56,31 @@ class FakeTelephonyService:
         )
 
 
+class FakeEvaluationAgent:
+    async def evaluate_call(self, *, call: Call, job: Job, resume: Resume):
+        from app.agents.evaluation_agent import EvaluationResult
+
+        return EvaluationResult(
+            overall_score=8,
+            technical_score=8,
+            communication_score=7,
+            experience_score=8,
+            remarks="Strong match for the role based on the transcript.",
+            strengths=["Clear technical examples", "Good role alignment"],
+            weaknesses=["Could provide more depth on trade-offs"],
+            recommendation="advance",
+        )
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def override_phase5_deps():
     app.dependency_overrides[get_question_generator_agent] = lambda: FakeQuestionGeneratorAgent()
     app.dependency_overrides[get_telephony_service] = lambda: FakeTelephonyService()
+    app.dependency_overrides[get_evaluation_agent] = lambda: FakeEvaluationAgent()
     yield
     app.dependency_overrides.pop(get_question_generator_agent, None)
     app.dependency_overrides.pop(get_telephony_service, None)
+    app.dependency_overrides.pop(get_evaluation_agent, None)
 
 
 @pytest_asyncio.fixture
@@ -249,3 +268,44 @@ async def test_cannot_access_other_users_call(
 
     response = await client.get(f"/api/calls/{call_id}")
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_evaluate_call(
+    authenticated_client: AsyncClient,
+    parsed_resume_for_calls: tuple[Job, Resume],
+    db_session,
+):
+    job, resume = parsed_resume_for_calls
+    create_response = await authenticated_client.post(f"/api/resumes/{resume.id}/calls/start")
+    call_id = create_response.json()["call"]["id"]
+
+    call = await db_session.get(Call, call_id)
+    call.transcript = (
+        "AI: Tell me about your experience.\n"
+        "Candidate: I built Python and FastAPI systems for AI workflows."
+    )
+    call.status = "completed"
+    await db_session.commit()
+
+    response = await authenticated_client.post(f"/api/calls/{call_id}/evaluate")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["schema_version"] == "evaluation.v1"
+    assert data["overall_score"] == 8
+
+
+@pytest.mark.asyncio
+async def test_evaluate_call_requires_transcript(
+    authenticated_client: AsyncClient,
+    parsed_resume_for_calls: tuple[Job, Resume],
+):
+    _job, resume = parsed_resume_for_calls
+    create_response = await authenticated_client.post(f"/api/resumes/{resume.id}/calls/start")
+    call_id = create_response.json()["call"]["id"]
+
+    response = await authenticated_client.post(f"/api/calls/{call_id}/evaluate")
+
+    assert response.status_code == 422
+    assert "transcript" in response.json()["detail"].lower()

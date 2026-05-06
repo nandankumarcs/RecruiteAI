@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Award,
   Briefcase,
@@ -74,6 +75,7 @@ export function ResumeDetailModal({
   isOpen,
   onClose,
 }: ResumeDetailModalProps) {
+  const navigate = useNavigate();
   const [questions, setQuestions] = useState<InterviewQuestion[]>([]);
   const [isQuestionsLoading, setIsQuestionsLoading] = useState(false);
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
@@ -359,6 +361,16 @@ export function ResumeDetailModal({
                 <div className="text-muted-foreground">
                   {startedCall.phone_number} • {new Date(startedCall.created_at).toLocaleString()}
                 </div>
+                <Button
+                  variant="link"
+                  className="mt-2 h-auto p-0 text-primary"
+                  onClick={() => {
+                    onClose();
+                    navigate(`/calls/${startedCall.id}`);
+                  }}
+                >
+                  View call details
+                </Button>
               </div>
             ) : (
               <div className="text-sm text-muted-foreground">
