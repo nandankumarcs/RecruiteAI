@@ -32,11 +32,19 @@ export function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-muted/40 p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle className="text-2xl">RecruiteAI</CardTitle>
-          <CardDescription>Enter your email below to login to your account.</CardDescription>
+    <div className="min-h-screen w-full bg-background flex items-center justify-center relative overflow-hidden p-4">
+      {/* Background Blobs */}
+      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-primary/10 rounded-full blur-[120px] animate-pulse" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-500/10 rounded-full blur-[120px] animate-pulse delay-700" />
+      
+      <Card className="w-full max-w-md relative z-10 border-none bg-card/60 backdrop-blur-xl shadow-2xl">
+        <CardHeader className="space-y-1 text-center">
+          <CardTitle className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+            RecruiteAI
+          </CardTitle>
+          <CardDescription className="text-base">
+            Enter your credentials to access the platform
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -45,24 +53,32 @@ export function Login() {
               <Input
                 id="email"
                 type="email"
-                placeholder="m@example.com"
+                placeholder="name@company.com"
                 required
+                className="bg-background/50 border-border/50 focus:border-primary/50 transition-all"
                 value={email}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password">Password</Label>
+              </div>
               <Input
                 id="password"
                 type="password"
                 required
+                className="bg-background/50 border-border/50 focus:border-primary/50 transition-all"
                 value={password}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
               />
             </div>
-            {error && <p className="text-sm text-destructive font-medium">{error}</p>}
-            <Button type="submit" className="w-full" disabled={loading}>
+            {error && (
+              <div className="p-3 rounded-md bg-destructive/10 border border-destructive/20">
+                <p className="text-sm text-destructive font-medium text-center">{error}</p>
+              </div>
+            )}
+            <Button type="submit" className="w-full h-11 text-base font-semibold shadow-lg shadow-primary/20 hover:shadow-primary/30 transition-all" disabled={loading}>
               {loading ? "Signing in..." : "Sign in"}
             </Button>
           </form>

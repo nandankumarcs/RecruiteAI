@@ -78,94 +78,108 @@ export function Jobs() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-3xl font-bold tracking-tight">Jobs</h2>
+        <div>
+          <h2 className="text-3xl font-bold tracking-tight">Jobs</h2>
+          <p className="text-muted-foreground">Manage your recruitment positions and candidates.</p>
+        </div>
         
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
-            <Button>
+            <Button className="shadow-lg shadow-primary/20">
               <Plus className="mr-2 h-4 w-4" /> Create Job
             </Button>
           </DialogTrigger>
-          <DialogContent className="sm:max-w-[425px]">
+          <DialogContent className="sm:max-w-[500px] bg-card/95 backdrop-blur-xl border-border/50">
             <DialogHeader>
-              <DialogTitle>Create Job</DialogTitle>
+              <DialogTitle className="text-2xl font-bold">Create Job</DialogTitle>
               <DialogDescription>
-                Add a new job posting to start recruiting candidates.
+                Post a new position to start receiving and screening resumes.
               </DialogDescription>
             </DialogHeader>
-            <form onSubmit={handleCreateJob} className="space-y-4 pt-4">
-              <div className="space-y-2">
-                <Label htmlFor="title">Job Title</Label>
-                <Input
-                  id="title"
-                  placeholder="e.g. Senior Frontend Engineer"
-                  value={title}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
-                <Input
-                  id="description"
-                  placeholder="Job overview..."
-                  value={description}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDescription(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="requirements">Requirements</Label>
-                <Input
-                  id="requirements"
-                  placeholder="Must have React experience..."
-                  value={requirements}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRequirements(e.target.value)}
-                />
+            <form onSubmit={handleCreateJob}>
+              <div className="grid gap-6 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="title" className="text-sm font-semibold">Job Title</Label>
+                  <Input
+                    id="title"
+                    placeholder="e.g. Senior Frontend Engineer"
+                    value={title}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
+                    required
+                    className="bg-background/50"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="description" className="text-sm font-semibold">Description</Label>
+                  <Input
+                    id="description"
+                    placeholder="Job overview..."
+                    value={description}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDescription(e.target.value)}
+                    required
+                    className="bg-background/50"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="requirements" className="text-sm font-semibold">Requirements</Label>
+                  <Input
+                    id="requirements"
+                    placeholder="Must have React experience..."
+                    value={requirements}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRequirements(e.target.value)}
+                    className="bg-background/50"
+                  />
+                </div>
               </div>
               <div className="flex justify-end pt-4">
-                <Button type="submit">Create</Button>
+                <Button type="submit" className="px-8" disabled={loading}>
+                  {loading ? "Creating..." : "Create Job"}
+                </Button>
               </div>
             </form>
           </DialogContent>
         </Dialog>
       </div>
 
-      <div className="border rounded-md">
+      <div className="rounded-xl border border-border/50 bg-card/30 backdrop-blur-sm overflow-hidden shadow-sm">
         <Table>
-          <TableHeader>
+          <TableHeader className="bg-muted/50">
             <TableRow>
-              <TableHead>Title</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+              <TableHead className="font-semibold">Title</TableHead>
+              <TableHead className="font-semibold">Status</TableHead>
+              <TableHead className="font-semibold">Created</TableHead>
+              <TableHead className="text-right font-semibold">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={4} className="text-center py-8">
+                <TableCell colSpan={4} className="h-32 text-center text-muted-foreground">
                   Loading jobs...
                 </TableCell>
               </TableRow>
             ) : jobs.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={4} className="h-32 text-center text-muted-foreground">
                   No jobs found. Create your first job to get started.
                 </TableCell>
               </TableRow>
             ) : (
               jobs.map((job) => (
-                <TableRow key={job.id}>
+                <TableRow key={job.id} className="hover:bg-muted/30 transition-colors">
                   <TableCell className="font-medium">{job.title}</TableCell>
                   <TableCell>
-                    <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold">
+                    <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-green-500/10 text-green-500 border border-green-500/20">
                       {job.status}
                     </span>
                   </TableCell>
-                  <TableCell>{format(new Date(job.created_at), 'MMM d, yyyy')}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {new Date(job.created_at).toLocaleDateString()}
+                  </TableCell>
                   <TableCell className="text-right">
-                    <Button variant="ghost" size="sm">View</Button>
+                    <Button variant="ghost" size="sm" className="hover:bg-primary/10 hover:text-primary">
+                      View
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))
