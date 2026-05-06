@@ -22,8 +22,8 @@ RecruiteAI is an AI-powered recruiter platform for automated telephonic intervie
 | Phase | Status | Notes |
 |---|---|---|
 | Phase 1: Foundation | ✅ Done | Completed backend models, tests, JWT auth, and frontend Vite/shadcn scaffolding. |
-| Phase 2: Job CRUD + Storage | 🏃 In Progress | — |
-| Phase 3: Resume + Parser Agent | ⬜ Not Started | — |
+| Phase 2: Job CRUD + Storage | ✅ Done | Implemented generic Storage abstraction (local), Job router, Pytest tests, and frontend Login + Dashboard + Jobs pages. |
+| Phase 3: Resume + Parser Agent | 🏃 In Progress | — |
 | Phase 4: Question Generator | ⬜ Not Started | — |
 | Phase 5: Telephony + Interview | ⬜ Not Started | — |
 | Phase 6: Evaluation + Call UI | ⬜ Not Started | — |
@@ -64,9 +64,9 @@ RecruiteAI is an AI-powered recruiter platform for automated telephonic intervie
 
 ## Next Steps
 
-Start Phase 2: Resume Parsing & Job Management API
-1. Implement the generic `StorageProvider` abstraction (local filesystem support first).
-2. Create `Job` router (CRUD endpoints).
+Start Phase 3: Resume Management + Parser Agent
+1. Implement the LangChain **Resume Parser Agent** to extract skills, experience, and summary.
+2. Build PDF/DOCX text extraction utilities.
 3. Create `Resume` router (upload PDF/DOCX and link to job).
-4. Implement the LangChain **Resume Parser Agent** to extract skills, experience, and summary.
-5. Write Pytest fixtures for file uploads and test all job/resume endpoints.
+4. Write Pytest fixtures for file uploads and test resume endpoints.
+5. Build frontend Resume upload functionality inside the Job Detail page.
