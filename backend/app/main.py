@@ -20,7 +20,7 @@ from app.core.security import hash_password
 from app.database import async_session_factory, engine, Base
 from app.models import User  # noqa: F401 — import all models for table creation
 from app.models import Job, Resume, InterviewQuestion, Call, CallMessage  # noqa: F401
-from app.routers import auth, jobs
+from app.routers import auth, jobs, resumes
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -98,8 +98,8 @@ app.add_middleware(
 # --- Register Routers ---
 app.include_router(auth.router)
 app.include_router(jobs.router)
+app.include_router(resumes.router)
 # Future routers will be added here:
-# app.include_router(resumes.router)
 # app.include_router(calls.router)
 # app.include_router(twilio_webhooks.router)
 

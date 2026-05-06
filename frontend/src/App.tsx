@@ -4,6 +4,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { Login } from "@/pages/Login";
 import { Dashboard } from "@/pages/Dashboard";
 import { Jobs } from "@/pages/Jobs";
+import { JobDetail } from "@/pages/JobDetail";
 import { useAuth } from "@/context/AuthContext";
 
 function LandingPage() {
@@ -42,6 +43,7 @@ function App() {
           <Route element={<AppLayout />}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/jobs" element={<Jobs />} />
+            <Route path="/jobs/:jobId" element={<JobDetail />} />
           </Route>
         </Route>
         

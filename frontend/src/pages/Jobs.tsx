@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
-import { MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react"
+import { Eye, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react"
+import { useNavigate } from "react-router-dom"
 
 import { api } from "@/lib/api"
 import type { Job, JobStatus } from "@/lib/jobs"
@@ -59,6 +60,7 @@ const statusClasses: Record<JobStatus, string> = {
 }
 
 export function Jobs() {
+  const navigate = useNavigate()
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
@@ -290,15 +292,19 @@ export function Jobs() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => navigate(`/jobs/${job.id}`)}>
+                          <Eye className="size-4" />
+                          View Detail
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => openEditDialog(job)}>
-                          <Pencil />
+                          <Pencil className="size-4" />
                           Edit
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           variant="destructive"
                           onClick={() => void handleDelete(job)}
                         >
-                          <Trash2 />
+                          <Trash2 className="size-4" />
                           Delete
                         </DropdownMenuItem>
                       </DropdownMenuContent>
