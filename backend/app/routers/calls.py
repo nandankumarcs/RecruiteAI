@@ -4,9 +4,10 @@ Calls Router — start and inspect interview calls.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +19,7 @@ from app.agents.evaluation_agent import EvaluationAgent, get_evaluation_agent
 from app.config import get_settings
 from app.core.dependencies import get_current_user
 from app.core.exceptions import CallInProgressError, NotFoundError, ValidationError
-from app.database import get_db
+from app.database import async_session_factory, get_db
 from app.models.call import Call
 from app.models.job import Job
 from app.models.question import InterviewQuestion
@@ -30,6 +31,67 @@ from app.services.telephony import TelephonyService, get_telephony_service
 settings = get_settings()
 
 router = APIRouter(tags=["calls"])
+
+
+MOCK_CALL_STEPS = [
+    ("ringing", 2),
+    ("in_progress", 3),
+    ("completed", 4),
+]
+
+
+def _call_snapshot(call: Call) -> dict:
+    return {
+        "id": str(call.id),
+        "resume_id": str(call.resume_id),
+        "job_id": str(call.job_id),
+        "twilio_call_sid": call.twilio_call_sid,
+        "status": call.status,
+        "phone_number": call.phone_number,
+        "duration_seconds": call.duration_seconds,
+        "recording_url": call.recording_url,
+        "recording_path": call.recording_path,
+        "transcript": call.transcript,
+        "ai_evaluation": call.ai_evaluation,
+        "started_at": call.started_at.isoformat() if call.started_at else None,
+        "ended_at": call.ended_at.isoformat() if call.ended_at else None,
+        "created_at": call.created_at.isoformat() if call.created_at else None,
+    }
+
+
+async def _simulate_mock_call_progress(call_id: uuid.UUID) -> None:
+    for status, delay_seconds in MOCK_CALL_STEPS:
+        await asyncio.sleep(delay_seconds)
+        async with async_session_factory() as session:
+            call = await session.get(Call, call_id)
+            if call is None:
+                return
+            if call.status not in {"queued", "ringing", "in_progress"}:
+                return
+
+            call.status = status
+            if status == "in_progress" and call.started_at is None:
+                from datetime import datetime, timezone
+
+                call.started_at = datetime.now(timezone.utc)
+            if status == "completed":
+                from datetime import datetime, timezone
+
+                call.ended_at = datetime.now(timezone.utc)
+                call.duration_seconds = max(
+                    1,
+                    int((call.ended_at - (call.started_at or call.created_at)).total_seconds()),
+                )
+                if not call.transcript:
+                    call.transcript = (
+                        "AI: Thanks for taking the time to speak with us today.\n"
+                        "Candidate: Happy to be here.\n"
+                        "AI: Tell me about your recent experience building AI systems.\n"
+                        "Candidate: I worked on production-style RAG workflows using Python, FastAPI, FAISS, and LangChain.\n"
+                        "AI: What trade-offs did you have to manage?\n"
+                        "Candidate: I balanced retrieval quality, chunk sizing, and response latency to keep the experience useful and fast."
+                    )
+            await session.commit()
 
 
 async def _get_owned_resume(
@@ -125,6 +187,9 @@ async def start_call(
     await db.flush()
     await db.refresh(call)
 
+    if getattr(telephony, "enable_mock_progression", False) and outbound.provider == "mock":
+        asyncio.create_task(_simulate_mock_call_progress(call.id))
+
     return CallStartResponse(provider=outbound.provider, call=call)
 
 
@@ -165,6 +230,29 @@ async def get_call(
     if not call:
         raise NotFoundError(resource="Call")
     return call
+
+
+@router.websocket("/ws/calls/{call_id}")
+async def call_status_websocket(websocket: WebSocket, call_id: uuid.UUID):
+    """Stream call status updates over WebSocket for live progress UI."""
+    await websocket.accept()
+    try:
+        while True:
+            async with async_session_factory() as session:
+                call = await session.get(Call, call_id)
+                if call is None:
+                    await websocket.send_json({"type": "not_found", "call_id": str(call_id)})
+                    await websocket.close(code=4404)
+                    return
+
+                await websocket.send_json({"type": "call_update", "call": _call_snapshot(call)})
+                if call.status in {"completed", "failed", "no_answer"}:
+                    await websocket.close()
+                    return
+
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        return
 
 
 @router.post("/api/calls/{call_id}/evaluate", response_model=CallEvaluationResponse)

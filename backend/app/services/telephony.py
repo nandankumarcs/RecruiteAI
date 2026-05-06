@@ -31,6 +31,7 @@ class TelephonyService:
     """Provider-backed outbound telephony service."""
 
     def __init__(self):
+        self.enable_mock_progression = True
         self.mock_mode = bool(
             settings.TWILIO_MOCK_MODE
             or not settings.TWILIO_ACCOUNT_SID

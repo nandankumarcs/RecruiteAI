@@ -13,8 +13,10 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { CallProgressIndicator } from "@/components/calls/CallProgressIndicator";
+import type { CallRecord } from "@/lib/calls";
 
-interface CallEvaluation {
+interface CallEvaluation extends Record<string, unknown> {
   schema_version: string;
   overall_score: number;
   technical_score: number;
@@ -26,22 +28,7 @@ interface CallEvaluation {
   recommendation: string;
 }
 
-interface CallDetailData {
-  id: string;
-  resume_id: string;
-  job_id: string;
-  twilio_call_sid: string | null;
-  status: string;
-  phone_number: string;
-  duration_seconds: number | null;
-  recording_url: string | null;
-  recording_path: string | null;
-  transcript: string | null;
-  ai_evaluation: CallEvaluation | null;
-  started_at: string | null;
-  ended_at: string | null;
-  created_at: string;
-}
+type CallDetailData = CallRecord;
 
 const scoreItems = [
   { key: "technical_score", label: "Technical" },
@@ -119,7 +106,7 @@ export function CallDetail() {
     );
   }
 
-  const evaluation = call.ai_evaluation;
+  const evaluation = call.ai_evaluation as CallEvaluation | null;
 
   return (
     <div className="space-y-6 pb-12">
@@ -187,6 +174,14 @@ export function CallDetail() {
           </CardContent>
         </Card>
       </div>
+
+      {["queued", "ringing", "in_progress"].includes(call.status) && (
+        <CallProgressIndicator
+          callId={call.id}
+          initialCall={call}
+          onUpdate={(updatedCall) => setCall(updatedCall)}
+        />
+      )}
 
       <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <Card className="border-border/50 bg-card/70">

@@ -3,6 +3,7 @@ Twilio webhooks router — minimal voice/status foundation for Phase 5.
 """
 
 from __future__ import annotations
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import Response
@@ -63,6 +64,10 @@ async def twilio_status_webhook(
         return Response(status_code=204)
 
     call.status = STATUS_MAP.get(CallStatus, call.status)
+    if call.status == "in_progress" and call.started_at is None:
+        call.started_at = datetime.now(timezone.utc)
+    if call.status in {"completed", "failed", "no_answer"} and call.ended_at is None:
+        call.ended_at = datetime.now(timezone.utc)
     if CallDuration and CallDuration.isdigit():
         call.duration_seconds = int(CallDuration)
     await db.flush()

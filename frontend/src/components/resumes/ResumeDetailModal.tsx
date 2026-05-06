@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { api } from "@/lib/api";
+import type { CallRecord } from "@/lib/calls";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,23 +44,17 @@ interface QuestionSetResponse {
   questions: InterviewQuestion[];
 }
 
-interface StartedCall {
-  id: string;
-  status: string;
-  phone_number: string;
-  twilio_call_sid: string | null;
-  created_at: string;
-}
-
 interface CallStartResponse {
   provider: string;
-  call: StartedCall;
+  call: CallRecord;
 }
 
 interface ResumeDetailModalProps {
   resume: Resume | null;
+  activeCall?: CallRecord | null;
   isOpen: boolean;
   onClose: () => void;
+  onCallUpdate?: (call: CallRecord) => void;
 }
 
 const difficultyClasses: Record<number, string> = {
@@ -72,8 +67,10 @@ const difficultyClasses: Record<number, string> = {
 
 export function ResumeDetailModal({
   resume,
+  activeCall,
   isOpen,
   onClose,
+  onCallUpdate,
 }: ResumeDetailModalProps) {
   const navigate = useNavigate();
   const [questions, setQuestions] = useState<InterviewQuestion[]>([]);
@@ -82,13 +79,13 @@ export function ResumeDetailModal({
   const [questionsError, setQuestionsError] = useState<string | null>(null);
   const [isStartingCall, setIsStartingCall] = useState(false);
   const [callError, setCallError] = useState<string | null>(null);
-  const [startedCall, setStartedCall] = useState<StartedCall | null>(null);
+  const [startedCall, setStartedCall] = useState<CallRecord | null>(null);
 
   useEffect(() => {
     if (!resume || !isOpen || resume.status !== "parsed") {
       setQuestions([]);
       setQuestionsError(null);
-      setStartedCall(null);
+      setStartedCall(activeCall ?? null);
       setCallError(null);
       return;
     }
@@ -111,7 +108,24 @@ export function ResumeDetailModal({
     };
 
     void loadQuestions();
-  }, [resume, isOpen]);
+  }, [resume, isOpen, activeCall]);
+
+  useEffect(() => {
+    if (!startedCall?.id || !isOpen) return;
+
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://127.0.0.1:8000/ws/calls/${startedCall.id}`);
+
+    socket.onmessage = (event) => {
+      const payload = JSON.parse(event.data);
+      if (payload.type === "call_update" && payload.call) {
+        setStartedCall(payload.call);
+        onCallUpdate?.(payload.call);
+      }
+    };
+
+    return () => socket.close();
+  }, [startedCall?.id, isOpen, onCallUpdate]);
 
   if (!resume) return null;
 
@@ -153,6 +167,7 @@ export function ResumeDetailModal({
         `/resumes/${resume.id}/calls/start`
       );
       setStartedCall(response.data.call);
+      onCallUpdate?.(response.data.call);
     } catch (error) {
       console.error("Failed to start interview call", error);
       setCallError("Call initiation failed. Please try again.");
