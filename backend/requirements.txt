@@ -1,0 +1,43 @@
+# FastAPI & Server
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
+
+# Database
+sqlalchemy[asyncio]==2.0.40
+asyncpg==0.30.0
+alembic==1.15.2
+
+# Auth
+python-jose[cryptography]==3.4.0
+passlib[bcrypt]==1.7.4
+
+# Validation
+pydantic==2.11.3
+pydantic-settings==2.9.1
+
+# AI / LangChain
+langchain==0.3.25
+langchain-openai==0.3.18
+openai==1.82.0
+
+# Telephony
+twilio==9.6.1
+
+# Resume Parsing
+pypdf==5.6.0
+python-docx==1.1.2
+
+# Storage
+boto3==1.38.13
+
+# WebSockets
+websockets==15.0.1
+
+# Testing
+pytest==8.3.5
+pytest-asyncio==0.26.0
+httpx==0.28.1
+
+# Utilities
+python-dotenv==1.1.0

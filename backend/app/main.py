@@ -1,0 +1,104 @@
+"""
+RecruiteAI — FastAPI Application Entry Point
+
+Configures the FastAPI app with:
+- CORS middleware (allows frontend origin)
+- Router registration (auth, jobs, resumes, calls, webhooks)
+- Lifespan events (DB table creation + seed user on startup)
+- Health check endpoint
+"""
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
+
+from app.config import get_settings
+from app.core.security import hash_password
+from app.database import async_session_factory, engine, Base
+from app.models import User  # noqa: F401 — import all models for table creation
+from app.models import Job, Resume, InterviewQuestion, Call, CallMessage  # noqa: F401
+from app.routers import auth
+
+settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+async def seed_default_user():
+    """
+    Seed the first admin user if no users exist in the database.
+    Credentials are read from environment variables.
+    """
+    async with async_session_factory() as session:
+        result = await session.execute(select(User).limit(1))
+        existing_user = result.scalar_one_or_none()
+
+        if existing_user is None:
+            user = User(
+                email=settings.SEED_USER_EMAIL,
+                hashed_password=hash_password(settings.SEED_USER_PASSWORD),
+                full_name=settings.SEED_USER_NAME,
+                is_active=True,
+            )
+            session.add(user)
+            await session.commit()
+            logger.info(f"Seeded default user: {settings.SEED_USER_EMAIL}")
+        else:
+            logger.info("Users already exist — skipping seed.")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan — runs on startup and shutdown.
+    - Startup: Create DB tables (if not exist) and seed default user
+    - Shutdown: Dispose engine connection pool
+    """
+    # Startup
+    logger.info("Starting RecruiteAI backend...")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Database tables created/verified.")
+
+    await seed_default_user()
+    logger.info("RecruiteAI backend ready.")
+
+    yield
+
+    # Shutdown
+    await engine.dispose()
+    logger.info("RecruiteAI backend shut down.")
+
+
+# --- Create FastAPI Application ---
+app = FastAPI(
+    title="RecruiteAI",
+    description="AI-powered recruiter platform for automated telephonic interviews",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+# --- CORS Middleware ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.FRONTEND_URL, "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Register Routers ---
+app.include_router(auth.router)
+# Future routers will be added here:
+# app.include_router(jobs.router)
+# app.include_router(resumes.router)
+# app.include_router(calls.router)
+# app.include_router(twilio_webhooks.router)
+
+
+@app.get("/health", tags=["health"])
+async def health_check():
+    """Health check endpoint — returns OK if the server is running."""
+    return {"status": "ok", "service": "recruiteai-backend"}
