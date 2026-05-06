@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_PHONE_NUMBER: str = ""
+    TWILIO_MOCK_MODE: bool = True
 
     # --- Storage ---
     STORAGE_PROVIDER: str = "local"  # "local" or "s3"

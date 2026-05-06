@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Award,
   Briefcase,
+  PhoneCall,
   FileQuestion,
   FileText,
   FolderKanban,
@@ -41,6 +42,19 @@ interface QuestionSetResponse {
   questions: InterviewQuestion[];
 }
 
+interface StartedCall {
+  id: string;
+  status: string;
+  phone_number: string;
+  twilio_call_sid: string | null;
+  created_at: string;
+}
+
+interface CallStartResponse {
+  provider: string;
+  call: StartedCall;
+}
+
 interface ResumeDetailModalProps {
   resume: Resume | null;
   isOpen: boolean;
@@ -64,11 +78,16 @@ export function ResumeDetailModal({
   const [isQuestionsLoading, setIsQuestionsLoading] = useState(false);
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
   const [questionsError, setQuestionsError] = useState<string | null>(null);
+  const [isStartingCall, setIsStartingCall] = useState(false);
+  const [callError, setCallError] = useState<string | null>(null);
+  const [startedCall, setStartedCall] = useState<StartedCall | null>(null);
 
   useEffect(() => {
     if (!resume || !isOpen || resume.status !== "parsed") {
       setQuestions([]);
       setQuestionsError(null);
+      setStartedCall(null);
+      setCallError(null);
       return;
     }
 
@@ -118,6 +137,25 @@ export function ResumeDetailModal({
       setQuestionsError("Question generation failed. Please try again.");
     } finally {
       setIsGeneratingQuestions(false);
+    }
+  };
+
+  const handleStartCall = async () => {
+    if (!resume) return;
+
+    setIsStartingCall(true);
+    setCallError(null);
+
+    try {
+      const response = await api.post<CallStartResponse>(
+        `/resumes/${resume.id}/calls/start`
+      );
+      setStartedCall(response.data.call);
+    } catch (error) {
+      console.error("Failed to start interview call", error);
+      setCallError("Call initiation failed. Please try again.");
+    } finally {
+      setIsStartingCall(false);
     }
   };
 
@@ -305,6 +343,59 @@ export function ResumeDetailModal({
                 No questions have been generated for this resume yet.
               </div>
             )}
+          </div>
+
+          <div className="space-y-3 rounded-xl border border-border/50 bg-muted/20 p-4">
+            <div className="flex items-center gap-2 font-semibold">
+              <PhoneCall className="h-4 w-4 text-primary" />
+              Interview Call
+            </div>
+
+            {startedCall ? (
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm">
+                <div className="font-medium text-emerald-700 dark:text-emerald-400">
+                  Call {startedCall.status}
+                </div>
+                <div className="text-muted-foreground">
+                  {startedCall.phone_number} • {new Date(startedCall.created_at).toLocaleString()}
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground">
+                Start an interview call for this parsed candidate. Questions will be generated automatically if they do not exist yet.
+              </div>
+            )}
+
+            {callError && (
+              <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive">
+                {callError}
+              </div>
+            )}
+
+            <Button
+              onClick={handleStartCall}
+              disabled={
+                resume.status !== "parsed" ||
+                !resume.phone_number ||
+                isStartingCall ||
+                startedCall?.status === "queued" ||
+                startedCall?.status === "ringing" ||
+                startedCall?.status === "in_progress"
+              }
+              className="w-full"
+            >
+              {isStartingCall ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Starting Call
+                </>
+              ) : (
+                <>
+                  <PhoneCall className="mr-2 h-4 w-4" />
+                  Start Interview Call
+                </>
+              )}
+            </Button>
           </div>
 
           {projects.length > 0 && (
