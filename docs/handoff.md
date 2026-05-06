@@ -21,8 +21,8 @@ RecruiteAI is an AI-powered recruiter platform for automated telephonic intervie
 
 | Phase | Status | Notes |
 |---|---|---|
-| Phase 1: Foundation | ⬜ Not Started | — |
-| Phase 2: Job CRUD + Storage | ⬜ Not Started | — |
+| Phase 1: Foundation | ✅ Done | Completed backend models, tests, JWT auth, and frontend Vite/shadcn scaffolding. |
+| Phase 2: Job CRUD + Storage | 🏃 In Progress | — |
 | Phase 3: Resume + Parser Agent | ⬜ Not Started | — |
 | Phase 4: Question Generator | ⬜ Not Started | — |
 | Phase 5: Telephony + Interview | ⬜ Not Started | — |
@@ -56,7 +56,7 @@ RecruiteAI is an AI-powered recruiter platform for automated telephonic intervie
 
 - **Frontend** runs on port 5173 (Vite dev server)
 - **Backend** runs on port 8000 (FastAPI uvicorn)
-- **PostgreSQL** via docker-compose on port 5432
+- **PostgreSQL** runs locally (via Homebrew on `localhost:5432` with user `mac`)
 - **ngrok** required for Twilio webhooks in development
 - **WebSocket** from frontend to backend for live call status updates
 
@@ -64,12 +64,9 @@ RecruiteAI is an AI-powered recruiter platform for automated telephonic intervie
 
 ## Next Steps
 
-Start Phase 1: Foundation & Project Setup
-1. Scaffold Vite React TypeScript project
-2. Set up shadcn/ui
-3. Scaffold FastAPI project
-4. Configure SQLAlchemy + Alembic
-5. Create all database models
-6. Implement JWT auth
-7. Write auth tests
-8. Docker-compose for PostgreSQL
+Start Phase 2: Resume Parsing & Job Management API
+1. Implement the generic `StorageProvider` abstraction (local filesystem support first).
+2. Create `Job` router (CRUD endpoints).
+3. Create `Resume` router (upload PDF/DOCX and link to job).
+4. Implement the LangChain **Resume Parser Agent** to extract skills, experience, and summary.
+5. Write Pytest fixtures for file uploads and test all job/resume endpoints.
