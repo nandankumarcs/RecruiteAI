@@ -32,6 +32,7 @@ STATUS_MAP = {
     "initiated": "pending",
     "queued": "queued",
     "ringing": "ringing",
+    "answered": "in_progress",
     "in-progress": "in_progress",
     "completed": "completed",
     "busy": "failed",
@@ -64,7 +65,11 @@ async def twilio_voice_webhook(call_resume_id: str | None = None):
         .replace("http://", "ws://")
         .rstrip("/")
     )
-    stream = connect.stream(url=f"{websocket_base}/ws/twilio-media/{call_resume_id}")
+    stream = connect.stream(
+        url=f"{websocket_base}/ws/twilio-media/{call_resume_id}",
+        status_callback=f"{settings.PUBLIC_URL.rstrip('/')}/webhooks/twilio/stream-status",
+        status_callback_method="POST",
+    )
     stream.parameter(name="resume_id", value=call_resume_id)
     return Response(content=str(response), media_type="application/xml")
 
@@ -123,6 +128,12 @@ async def twilio_recording_webhook(
     await db.commit()
     if call.status == "completed":
         await auto_evaluate_call_if_ready(call_id)
+    return Response(status_code=204)
+
+
+@router.post("/webhooks/twilio/stream-status", status_code=204)
+async def twilio_stream_status_webhook():
+    """Accept Twilio media stream lifecycle callbacks for observability."""
     return Response(status_code=204)
 
 

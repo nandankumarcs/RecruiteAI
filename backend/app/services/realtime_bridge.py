@@ -34,6 +34,7 @@ class ConversationState:
     consent_granted: bool = False
     termination_requested: bool = False
     off_topic_count: int = 0
+    consent_prompt_delivered: bool = False
 
 
 class RealtimeBridge:
@@ -46,6 +47,10 @@ class RealtimeBridge:
         self.transcription_model = settings.OPENAI_TRANSCRIPTION_MODEL
         self.telephony = get_telephony_service()
         self._last_message_keys: dict[uuid.UUID, tuple[str, str]] = {}
+
+    @staticmethod
+    def _is_terminal_status(status: str | None) -> bool:
+        return status in {"completed", "failed", "no_answer"}
 
     async def _load_context(
         self, resume_id: uuid.UUID
@@ -134,6 +139,7 @@ class RealtimeBridge:
             "Conversation rules:\n"
             "- Only ask about experience that is present in the resume or directly relevant to the job requirements.\n"
             "- Keep questions focused and concrete.\n"
+            "- Before consent, only identify yourself, explain the purpose of the call briefly, and ask whether now is a good time and whether the candidate consents to continue.\n"
             "- After consent is granted, ask exactly one interview question at a time and wait for a substantive answer before moving to the next question.\n"
             "- If the candidate responds to an interview question with only a bare acknowledgement such as yes, okay, sure, or go ahead, treat that as no answer and restate the same question more simply instead of moving on.\n"
             "- Stay focused on the interview. Decline unrelated requests and steer back to the screening.\n"
@@ -271,6 +277,16 @@ class RealtimeBridge:
             "would you",
         )
         return any(lowered.endswith(word) for word in trailing_words)
+
+    @classmethod
+    def _is_consent_prompt(cls, content: str) -> bool:
+        text = cls._normalize_text(content)
+        if not text:
+            return False
+        return (
+            ("good time" in text or "consent" in text)
+            and ("screening" in text or "recruit" in text or "role" in text)
+        )
 
     async def _close_call_with_message(
         self,
@@ -451,7 +467,8 @@ class RealtimeBridge:
             call = await session.get(Call, call_id)
             if call is None:
                 return
-            call.status = "completed"
+            if not self._is_terminal_status(call.status):
+                call.status = "completed"
             call.ended_at = call.ended_at or datetime.now(timezone.utc)
             if call.started_at:
                 call.duration_seconds = max(
@@ -477,6 +494,7 @@ class RealtimeBridge:
         should_hang_up = False
         assistant_response_active = False
         assistant_cancel_requested = False
+        initial_prompt_sent = False
 
         realtime_url = f"wss://api.openai.com/v1/realtime?model={self.model}"
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -489,7 +507,6 @@ class RealtimeBridge:
                 questions=questions,
                 state=state,
             )
-            await openai_ws.send(json.dumps({"type": "response.create"}))
 
             async def forward_openai_to_twilio() -> None:
                 nonlocal assistant_cancel_requested, assistant_response_active, should_hang_up, twilio_stream_sid
@@ -532,7 +549,10 @@ class RealtimeBridge:
                                     state.termination_requested = True
                                     state_changed = True
                             elif not state.consent_granted:
-                                if self._is_affirmative_consent(transcript):
+                                if (
+                                    state.consent_prompt_delivered
+                                    and self._is_affirmative_consent(transcript)
+                                ):
                                     state.consent_granted = True
                                     state_changed = True
                                 elif self._is_clarification_request(transcript):
@@ -577,6 +597,8 @@ class RealtimeBridge:
                                 and self._looks_like_incomplete_assistant_fragment(transcript)
                             ):
                                 continue
+                            if not state.consent_granted and self._is_consent_prompt(transcript):
+                                state.consent_prompt_delivered = True
                             await self._append_message(
                                 call_id, "assistant", transcript, item_key=item_key
                             )
@@ -617,7 +639,10 @@ class RealtimeBridge:
 
             try:
                 while not stop_event.is_set():
-                    payload = await websocket.receive_text()
+                    try:
+                        payload = await websocket.receive_text()
+                    except Exception:
+                        break
                     data = json.loads(payload)
                     event = data.get("event")
 
@@ -627,6 +652,9 @@ class RealtimeBridge:
                         twilio_call_sid = start.get("callSid")
                         if call_id:
                             await self._update_call_started(call_id, twilio_call_sid)
+                        if not initial_prompt_sent:
+                            await openai_ws.send(json.dumps({"type": "response.create"}))
+                            initial_prompt_sent = True
                     elif event == "media":
                         media = data.get("media", {})
                         audio_payload = media.get("payload")

@@ -8,6 +8,7 @@ local verification and tests.
 from __future__ import annotations
 
 import uuid
+from xml.sax.saxutils import escape
 
 from pydantic import BaseModel
 
@@ -90,9 +91,10 @@ class TelephonyService:
         if self.mock_mode or self._client is None:
             return
 
+        safe_message = escape(message)
         twiml = (
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-            f"<Response><Say>{message}</Say><Hangup/></Response>"
+            f"<Response><Say>{safe_message}</Say><Hangup/></Response>"
         )
         self._client.calls(call_sid).update(twiml=twiml)
 

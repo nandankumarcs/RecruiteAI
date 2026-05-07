@@ -115,6 +115,20 @@ def test_consent_and_off_topic_helpers():
     assert RealtimeBridge._is_end_intent("Can you disconnect the call?")
     assert RealtimeBridge._is_clarification_request("What is this again?")
     assert RealtimeBridge._is_off_topic_request("Write a poem for me, please.")
+    assert RealtimeBridge._is_consent_prompt(
+        "Hello, this is a recruiter screening call for the role. Is now a good time, and do you consent to continue?"
+    )
+
+
+def test_consent_is_not_granted_before_prompt_delivery():
+    state = ConversationState()
+
+    early_yes = RealtimeBridge._is_affirmative_consent("Yes, sir.")
+    assert early_yes is True
+    assert state.consent_prompt_delivered is False
+    should_grant = state.consent_prompt_delivered and early_yes
+
+    assert should_grant is False
 
 
 def test_incomplete_assistant_fragment_detection():
@@ -245,3 +259,47 @@ async def test_append_message_keeps_distinct_user_turns_separate(db_session, tes
 
     await db_session.refresh(call)
     assert call.transcript == "User: My first answer\nUser: My second answer"
+
+
+@pytest.mark.asyncio
+async def test_update_call_finished_preserves_existing_terminal_status(db_session, test_user):
+    bridge = RealtimeBridge()
+    job = Job(
+        user_id=test_user.id,
+        title="AI Engineer",
+        description="Build AI recruiting systems.",
+        requirements="Python, FastAPI, LLMs",
+        status="active",
+    )
+    db_session.add(job)
+    await db_session.flush()
+
+    resume = Resume(
+        job_id=job.id,
+        candidate_name="Candidate",
+        phone_number="+91-1111111111",
+        email="candidate@example.com",
+        file_path="/tmp/resume.pdf",
+        file_type="pdf",
+        raw_text="resume text",
+        status="parsed",
+        parsed_data={"summary": "RAG engineer"},
+    )
+    db_session.add(resume)
+    await db_session.flush()
+
+    call = Call(
+        resume_id=resume.id,
+        job_id=job.id,
+        twilio_call_sid="CA_REALTIME_TEST_3",
+        status="failed",
+        phone_number=resume.phone_number,
+    )
+    db_session.add(call)
+    await db_session.commit()
+
+    await bridge._update_call_finished(call.id)
+
+    await db_session.refresh(call)
+    assert call.status == "failed"
+    assert call.ended_at is not None

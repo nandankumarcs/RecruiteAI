@@ -405,6 +405,36 @@ async def test_twilio_status_callback_persists_duration_and_recording(
 
 
 @pytest.mark.asyncio
+async def test_twilio_answered_status_maps_to_in_progress(
+    client: AsyncClient,
+    db_session,
+    parsed_resume_for_calls: tuple[Job, Resume],
+):
+    job, resume = parsed_resume_for_calls
+    call = Call(
+        resume_id=resume.id,
+        job_id=job.id,
+        twilio_call_sid="CA_ANSWERED_TEST",
+        status="queued",
+        phone_number=resume.phone_number,
+    )
+    db_session.add(call)
+    await db_session.commit()
+
+    response = await client.post(
+        "/webhooks/twilio/status",
+        data={
+            "CallSid": "CA_ANSWERED_TEST",
+            "CallStatus": "answered",
+        },
+    )
+
+    assert response.status_code == 204
+    await db_session.refresh(call)
+    assert call.status == "in_progress"
+
+
+@pytest.mark.asyncio
 async def test_twilio_recording_callback_persists_recording_metadata(
     client: AsyncClient,
     db_session,
@@ -565,3 +595,16 @@ async def test_dashboard_metrics_include_call_stats(
     assert data["active_calls"] == 1
     assert data["completed_calls"] == 1
     assert data["average_score"] == 8.0
+
+
+@pytest.mark.asyncio
+async def test_voice_webhook_includes_stream_status_callback(client: AsyncClient):
+    response = await client.post(
+        "/webhooks/twilio/voice",
+        params={"call_resume_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "/webhooks/twilio/stream-status" in body
+    assert "/ws/twilio-media/" in body
