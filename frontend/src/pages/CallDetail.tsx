@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
+  Headphones,
   Loader2,
   PhoneCall,
   Sparkles,
@@ -15,6 +16,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CallProgressIndicator } from "@/components/calls/CallProgressIndicator";
 import type { CallRecord } from "@/lib/calls";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { useToast } from "@/context/ToastContext";
 
 interface CallEvaluation extends Record<string, unknown> {
   schema_version: string;
@@ -28,6 +31,12 @@ interface CallEvaluation extends Record<string, unknown> {
   recommendation: string;
 }
 
+interface TranscriptLine {
+  id: string;
+  speaker: string;
+  text: string;
+}
+
 type CallDetailData = CallRecord;
 
 const scoreItems = [
@@ -36,12 +45,33 @@ const scoreItems = [
   { key: "experience_score", label: "Experience" },
 ] as const;
 
+function parseTranscript(transcript: string | null): TranscriptLine[] {
+  if (!transcript) return [];
+
+  return transcript
+    .split("\n")
+    .map((line, index) => {
+      const [speakerPart, ...textParts] = line.split(":");
+      const normalizedSpeaker = speakerPart?.trim() || "Speaker";
+      const text = textParts.join(":").trim();
+      return {
+        id: `${normalizedSpeaker}-${index}`,
+        speaker: normalizedSpeaker,
+        text: text || line.trim(),
+      };
+    })
+    .filter((line) => line.text.length > 0);
+}
+
 export function CallDetail() {
+  const { toast } = useToast();
   const { callId } = useParams<{ callId: string }>();
   const [call, setCall] = useState<CallDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [isEvaluating, setIsEvaluating] = useState(false);
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  const [recordingLoading, setRecordingLoading] = useState(false);
 
   useEffect(() => {
     if (!callId) return;
@@ -55,13 +85,77 @@ export function CallDetail() {
       } catch (err) {
         console.error("Failed to fetch call detail", err);
         setError("Could not load call details right now.");
+        toast({
+          variant: "error",
+          title: "Call detail unavailable",
+          description: "We couldn't load this interview call right now.",
+        });
       } finally {
         setLoading(false);
       }
     };
 
     void fetchCall();
-  }, [callId]);
+  }, [callId, toast]);
+
+  useEffect(() => {
+    if (!callId || !call?.recording_url) {
+      setRecordingUrl((currentUrl) => {
+        if (currentUrl) {
+          URL.revokeObjectURL(currentUrl);
+        }
+        return null;
+      });
+      return;
+    }
+
+    let revoked = false;
+    let nextObjectUrl: string | null = null;
+
+    const fetchRecording = async () => {
+      try {
+        setRecordingLoading(true);
+        const token = localStorage.getItem("accessToken");
+        const response = await fetch(`${api.defaults.baseURL}/calls/${callId}/recording`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        if (!response.ok) {
+          throw new Error(`Recording fetch failed with status ${response.status}`);
+        }
+
+        const blob = await response.blob();
+        nextObjectUrl = URL.createObjectURL(blob);
+        if (!revoked) {
+          setRecordingUrl((currentUrl) => {
+            if (currentUrl) {
+              URL.revokeObjectURL(currentUrl);
+            }
+            return nextObjectUrl;
+          });
+        }
+      } catch (err) {
+        console.error("Failed to fetch recording", err);
+        toast({
+          variant: "error",
+          title: "Recording unavailable",
+          description: "We couldn't load the call audio for playback.",
+        });
+      } finally {
+        if (!revoked) {
+          setRecordingLoading(false);
+        }
+      }
+    };
+
+    void fetchRecording();
+
+    return () => {
+      revoked = true;
+      if (nextObjectUrl) {
+        URL.revokeObjectURL(nextObjectUrl);
+      }
+    };
+  }, [call?.recording_url, callId, toast]);
 
   const evaluateCall = async () => {
     if (!callId) return;
@@ -79,18 +173,43 @@ export function CallDetail() {
             }
           : current
       );
+      toast({
+        variant: "success",
+        title: "Evaluation updated",
+        description: "The interview has been scored successfully.",
+      });
     } catch (err) {
       console.error("Failed to evaluate call", err);
       setError("Evaluation could not be completed yet. A transcript may still be missing.");
+      toast({
+        variant: "error",
+        title: "Evaluation unavailable",
+        description: "This call needs a usable transcript before it can be scored.",
+      });
     } finally {
       setIsEvaluating(false);
     }
   };
 
+  const transcriptLines = useMemo(
+    () => parseTranscript(call?.transcript ?? null),
+    [call?.transcript]
+  );
+
   if (loading) {
     return (
-      <div className="flex h-[50vh] items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <div className="space-y-6 pb-12">
+        <Skeleton className="h-6 w-28" />
+        <div className="space-y-2">
+          <Skeleton className="h-9 w-56" />
+          <Skeleton className="h-5 w-72" />
+        </div>
+        <div className="grid gap-6 md:grid-cols-3">
+          <Skeleton className="h-28 w-full rounded-xl" />
+          <Skeleton className="h-28 w-full rounded-xl" />
+          <Skeleton className="h-28 w-full rounded-xl" />
+        </div>
+        <Skeleton className="h-72 w-full rounded-xl" />
       </div>
     );
   }
@@ -122,7 +241,7 @@ export function CallDetail() {
           <div>
             <h2 className="text-3xl font-bold tracking-tight">Interview Call</h2>
             <p className="text-muted-foreground">
-              Review status, transcript, and AI evaluation for this call.
+              Review the transcript, recording, and evaluation for this interview.
             </p>
           </div>
           <Badge variant="outline" className="px-3 py-1 text-sm capitalize">
@@ -184,40 +303,86 @@ export function CallDetail() {
       )}
 
       <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-        <Card className="border-border/50 bg-card/70">
-          <CardHeader className="flex flex-row items-center justify-between gap-4">
-            <div>
-              <CardTitle>Transcript</CardTitle>
-            </div>
-            <Button
-              onClick={evaluateCall}
-              disabled={isEvaluating || !call.transcript}
-            >
-              {isEvaluating ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Evaluating
-                </>
+        <div className="space-y-6">
+          <Card className="border-border/50 bg-card/70">
+            <CardHeader className="flex flex-row items-center justify-between gap-4">
+              <div>
+                <CardTitle>Transcript</CardTitle>
+              </div>
+              <Button onClick={evaluateCall} disabled={isEvaluating || !call.transcript}>
+                {isEvaluating ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Evaluating
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    {evaluation ? "Re-evaluate" : "Run Evaluation"}
+                  </>
+                )}
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {transcriptLines.length > 0 ? (
+                <div className="space-y-3">
+                  {transcriptLines.map((line) => {
+                    const isAssistant = /^ai|assistant$/i.test(line.speaker);
+                    return (
+                      <div
+                        key={line.id}
+                        className={`rounded-xl border p-4 text-sm leading-7 ${
+                          isAssistant
+                            ? "border-primary/20 bg-primary/5"
+                            : "border-border/50 bg-background/60"
+                        }`}
+                      >
+                        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          {line.speaker}
+                        </div>
+                        <div className="text-foreground">{line.text}</div>
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
-                <>
-                  <Sparkles className="mr-2 h-4 w-4" />
-                  {evaluation ? "Re-evaluate" : "Run Evaluation"}
-                </>
+                <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-6 text-sm text-muted-foreground">
+                  Transcript is not available yet for this call.
+                </div>
               )}
-            </Button>
-          </CardHeader>
-          <CardContent>
-            {call.transcript ? (
-              <div className="rounded-xl border border-border/50 bg-background/60 p-4 text-sm leading-7 text-muted-foreground whitespace-pre-wrap">
-                {call.transcript}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-6 text-sm text-muted-foreground">
-                Transcript is not available yet for this call.
-              </div>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/50 bg-card/70">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Headphones className="h-4 w-4 text-primary" />
+                Call Recording
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {recordingLoading ? (
+                <div className="space-y-3">
+                  <Skeleton className="h-10 w-full rounded-lg" />
+                  <Skeleton className="h-4 w-40" />
+                </div>
+              ) : recordingUrl ? (
+                <div className="space-y-3">
+                  <audio controls className="w-full">
+                    <source src={recordingUrl} />
+                  </audio>
+                  <p className="text-xs text-muted-foreground">
+                    Playback is loaded through the authenticated backend proxy.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-6 text-sm text-muted-foreground">
+                  No recording is available for this call yet.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
         <Card className="border-border/50 bg-card/70">
           <CardHeader>
@@ -238,9 +403,7 @@ export function CallDetail() {
                     <div key={key} className="space-y-1">
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-muted-foreground">{label}</span>
-                        <span className="font-medium">
-                          {evaluation[key]}/10
-                        </span>
+                        <span className="font-medium">{evaluation[key]}/10</span>
                       </div>
                       <div className="h-2 rounded-full bg-muted">
                         <div

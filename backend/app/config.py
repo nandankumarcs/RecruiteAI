@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o"
     OPENAI_REALTIME_MODEL: str = "gpt-4o-mini-realtime-preview"
     OPENAI_REALTIME_VOICE: str = "coral"
+    OPENAI_TRANSCRIPTION_MODEL: str = "whisper-1"
 
     # --- Twilio ---
     TWILIO_ACCOUNT_SID: str = ""

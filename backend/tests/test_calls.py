@@ -9,6 +9,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy import func, select
 
+import app.routers.calls as calls_router_module
 from app.agents.question_generator_agent import (
     GeneratedQuestion,
     QuestionGenerationResult,
@@ -45,15 +46,34 @@ class FakeQuestionGeneratorAgent:
 
 
 class FakeTelephonyService:
-    def start_outbound_call(self, *, to_number: str, twiml_url: str, status_callback_url: str):
+    def __init__(self):
+        self.ended_call_sids: list[str] = []
+        self.redirected_calls: list[tuple[str, str]] = []
+
+    def start_outbound_call(
+        self,
+        *,
+        to_number: str,
+        twiml_url: str,
+        status_callback_url: str,
+        recording_callback_url: str | None = None,
+    ):
         assert to_number
         assert "/webhooks/twilio/voice?call_resume_id=" in twiml_url
         assert status_callback_url.endswith("/webhooks/twilio/status")
+        assert recording_callback_url is not None
+        assert recording_callback_url.endswith("/webhooks/twilio/recording")
         return OutboundCallResult(
             call_sid="CA_TEST_CALL_SID",
             status="queued",
             provider="mock",
         )
+
+    def end_call(self, call_sid: str):
+        self.ended_call_sids.append(call_sid)
+
+    def say_and_hangup(self, call_sid: str, message: str):
+        self.redirected_calls.append((call_sid, message))
 
 
 class FakeEvaluationAgent:
@@ -75,7 +95,8 @@ class FakeEvaluationAgent:
 @pytest_asyncio.fixture(autouse=True)
 async def override_phase5_deps():
     app.dependency_overrides[get_question_generator_agent] = lambda: FakeQuestionGeneratorAgent()
-    app.dependency_overrides[get_telephony_service] = lambda: FakeTelephonyService()
+    fake_telephony = FakeTelephonyService()
+    app.dependency_overrides[get_telephony_service] = lambda: fake_telephony
     app.dependency_overrides[get_evaluation_agent] = lambda: FakeEvaluationAgent()
     yield
     app.dependency_overrides.pop(get_question_generator_agent, None)
@@ -297,6 +318,44 @@ async def test_evaluate_call(
 
 
 @pytest.mark.asyncio
+async def test_completed_status_callback_auto_evaluates_when_transcript_exists(
+    client: AsyncClient,
+    db_session,
+    parsed_resume_for_calls: tuple[Job, Resume],
+):
+    job, resume = parsed_resume_for_calls
+    call = Call(
+        resume_id=resume.id,
+        job_id=job.id,
+        twilio_call_sid="CA_AUTO_EVAL_STATUS",
+        status="in_progress",
+        phone_number=resume.phone_number,
+        transcript=(
+            "Assistant: Tell me about your experience.\n"
+            "User: I have built AI systems with Python and FastAPI."
+        ),
+    )
+    db_session.add(call)
+    await db_session.commit()
+
+    response = await client.post(
+        "/webhooks/twilio/status",
+        data={
+            "CallSid": "CA_AUTO_EVAL_STATUS",
+            "CallStatus": "completed",
+            "CallDuration": "55",
+        },
+    )
+
+    assert response.status_code == 204
+    await db_session.refresh(call)
+    assert call.status == "completed"
+    assert call.ai_evaluation is not None
+    assert call.ai_evaluation["schema_version"] == "evaluation.v1"
+    assert isinstance(call.ai_evaluation["overall_score"], int)
+
+
+@pytest.mark.asyncio
 async def test_evaluate_call_requires_transcript(
     authenticated_client: AsyncClient,
     parsed_resume_for_calls: tuple[Job, Resume],
@@ -309,3 +368,200 @@ async def test_evaluate_call_requires_transcript(
 
     assert response.status_code == 422
     assert "transcript" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_twilio_status_callback_persists_duration_and_recording(
+    client: AsyncClient,
+    db_session,
+    parsed_resume_for_calls: tuple[Job, Resume],
+):
+    job, resume = parsed_resume_for_calls
+    call = Call(
+        resume_id=resume.id,
+        job_id=job.id,
+        twilio_call_sid="CA_STATUS_TEST",
+        status="queued",
+        phone_number=resume.phone_number,
+    )
+    db_session.add(call)
+    await db_session.commit()
+
+    response = await client.post(
+        "/webhooks/twilio/status",
+        data={
+            "CallSid": "CA_STATUS_TEST",
+            "CallStatus": "completed",
+            "CallDuration": "42",
+            "RecordingUrl": "https://api.twilio.test/recordings/abc",
+        },
+    )
+
+    assert response.status_code == 204
+    await db_session.refresh(call)
+    assert call.status == "completed"
+    assert call.duration_seconds == 42
+    assert call.recording_url == "https://api.twilio.test/recordings/abc"
+
+
+@pytest.mark.asyncio
+async def test_twilio_recording_callback_persists_recording_metadata(
+    client: AsyncClient,
+    db_session,
+    parsed_resume_for_calls: tuple[Job, Resume],
+):
+    job, resume = parsed_resume_for_calls
+    call = Call(
+        resume_id=resume.id,
+        job_id=job.id,
+        twilio_call_sid="CA_RECORDING_TEST",
+        status="in_progress",
+        phone_number=resume.phone_number,
+    )
+    db_session.add(call)
+    await db_session.commit()
+
+    response = await client.post(
+        "/webhooks/twilio/recording",
+        data={
+            "CallSid": "CA_RECORDING_TEST",
+            "RecordingStatus": "completed",
+            "RecordingUrl": "https://api.twilio.test/recordings/final",
+        },
+    )
+
+    assert response.status_code == 204
+    await db_session.refresh(call)
+    assert call.recording_url == "https://api.twilio.test/recordings/final"
+    assert call.recording_path == "https://api.twilio.test/recordings/final"
+    assert call.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_recording_callback_auto_evaluates_completed_call(
+    client: AsyncClient,
+    db_session,
+    parsed_resume_for_calls: tuple[Job, Resume],
+):
+    job, resume = parsed_resume_for_calls
+    call = Call(
+        resume_id=resume.id,
+        job_id=job.id,
+        twilio_call_sid="CA_AUTO_EVAL_RECORDING",
+        status="in_progress",
+        phone_number=resume.phone_number,
+        transcript=(
+            "Assistant: Walk me through a project.\n"
+            "User: I built a retrieval system with LangChain and FAISS."
+        ),
+    )
+    db_session.add(call)
+    await db_session.commit()
+
+    response = await client.post(
+        "/webhooks/twilio/recording",
+        data={
+            "CallSid": "CA_AUTO_EVAL_RECORDING",
+            "RecordingStatus": "completed",
+            "RecordingUrl": "https://api.twilio.test/recordings/final",
+        },
+    )
+
+    assert response.status_code == 204
+    await db_session.refresh(call)
+    assert call.status == "completed"
+    assert call.ai_evaluation is not None
+    assert call.ai_evaluation["schema_version"] == "evaluation.v1"
+    assert isinstance(call.ai_evaluation["overall_score"], int)
+
+
+@pytest.mark.asyncio
+async def test_get_call_recording_proxies_audio(
+    authenticated_client: AsyncClient,
+    db_session,
+    parsed_resume_for_calls: tuple[Job, Resume],
+    monkeypatch,
+):
+    job, resume = parsed_resume_for_calls
+    call = Call(
+        resume_id=resume.id,
+        job_id=job.id,
+        twilio_call_sid="CA_RECORDING_PROXY",
+        status="completed",
+        phone_number=resume.phone_number,
+        recording_url="https://api.twilio.test/recordings/final",
+    )
+    db_session.add(call)
+    await db_session.commit()
+
+    monkeypatch.setattr(calls_router_module.settings, "TWILIO_ACCOUNT_SID", "AC123")
+    monkeypatch.setattr(calls_router_module.settings, "TWILIO_AUTH_TOKEN", "token123")
+
+    class FakeRecordingResponse:
+        content = b"fake-audio"
+        headers = {"content-type": "audio/mpeg"}
+
+        def raise_for_status(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str):
+            assert url == "https://api.twilio.test/recordings/final.mp3"
+            return FakeRecordingResponse()
+
+    monkeypatch.setattr(calls_router_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await authenticated_client.get(f"/api/calls/{call.id}/recording")
+
+    assert response.status_code == 200
+    assert response.content == b"fake-audio"
+    assert response.headers["content-type"].startswith("audio/mpeg")
+
+
+@pytest.mark.asyncio
+async def test_dashboard_metrics_include_call_stats(
+    authenticated_client: AsyncClient,
+    db_session,
+    parsed_resume_for_calls: tuple[Job, Resume],
+):
+    job, resume = parsed_resume_for_calls
+    db_session.add_all(
+        [
+            Call(
+                resume_id=resume.id,
+                job_id=job.id,
+                twilio_call_sid="CA_DASH_1",
+                status="completed",
+                phone_number=resume.phone_number,
+                ai_evaluation={"overall_score": 8},
+            ),
+            Call(
+                resume_id=resume.id,
+                job_id=job.id,
+                twilio_call_sid="CA_DASH_2",
+                status="in_progress",
+                phone_number=resume.phone_number,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await authenticated_client.get("/api/dashboard/metrics")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_jobs"] == 1
+    assert data["active_jobs"] == 1
+    assert data["total_calls"] == 2
+    assert data["active_calls"] == 1
+    assert data["completed_calls"] == 1
+    assert data["average_score"] == 8.0

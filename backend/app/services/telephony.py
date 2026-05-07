@@ -53,6 +53,7 @@ class TelephonyService:
         to_number: str,
         twiml_url: str,
         status_callback_url: str,
+        recording_callback_url: str | None = None,
     ) -> OutboundCallResult:
         if self.mock_mode or self._client is None:
             return OutboundCallResult(
@@ -65,6 +66,10 @@ class TelephonyService:
             to=to_number,
             from_=settings.TWILIO_PHONE_NUMBER,
             url=twiml_url,
+            record=True,
+            recording_status_callback=recording_callback_url,
+            recording_status_callback_event=["in-progress", "completed", "absent"],
+            recording_status_callback_method="POST",
             status_callback=status_callback_url,
             status_callback_event=["initiated", "ringing", "answered", "completed"],
             status_callback_method="POST",
@@ -74,6 +79,22 @@ class TelephonyService:
             status=call.status or "queued",
             provider="twilio",
         )
+
+    def end_call(self, call_sid: str) -> None:
+        if self.mock_mode or self._client is None:
+            return
+
+        self._client.calls(call_sid).update(status="completed")
+
+    def say_and_hangup(self, call_sid: str, message: str) -> None:
+        if self.mock_mode or self._client is None:
+            return
+
+        twiml = (
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            f"<Response><Say>{message}</Say><Hangup/></Response>"
+        )
+        self._client.calls(call_sid).update(twiml=twiml)
 
 
 def get_telephony_service() -> TelephonyService:

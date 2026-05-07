@@ -3,6 +3,7 @@ import { Upload, X, FileText, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/context/ToastContext";
 
 interface ResumeUploaderProps {
   jobId: string;
@@ -10,6 +11,7 @@ interface ResumeUploaderProps {
 }
 
 export function ResumeUploader({ jobId, onUploadSuccess }: ResumeUploaderProps) {
+  const { toast } = useToast();
   const [isDragging, setIsDragging] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -64,8 +66,18 @@ export function ResumeUploader({ jobId, onUploadSuccess }: ResumeUploaderProps) 
       });
       setFiles([]);
       onUploadSuccess();
+      toast({
+        variant: "success",
+        title: "Resumes uploaded",
+        description: "The files were uploaded and sent for parsing.",
+      });
     } catch (error) {
       console.error("Upload failed", error);
+      toast({
+        variant: "error",
+        title: "Upload failed",
+        description: "We couldn't upload or parse those resumes just now.",
+      });
     } finally {
       setIsUploading(false);
     }

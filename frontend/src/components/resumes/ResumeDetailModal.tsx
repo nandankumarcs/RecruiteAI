@@ -18,6 +18,7 @@ import {
 
 import { api } from "@/lib/api";
 import type { CallRecord } from "@/lib/calls";
+import { useToast } from "@/context/ToastContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -73,6 +74,7 @@ export function ResumeDetailModal({
   onCallUpdate,
 }: ResumeDetailModalProps) {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [questions, setQuestions] = useState<InterviewQuestion[]>([]);
   const [isQuestionsLoading, setIsQuestionsLoading] = useState(false);
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
@@ -148,9 +150,19 @@ export function ResumeDetailModal({
         `/resumes/${resume.id}/questions/generate`
       );
       setQuestions(response.data.questions || []);
+      toast({
+        variant: "success",
+        title: "Questions ready",
+        description: "Interview questions were generated for this candidate.",
+      });
     } catch (error) {
       console.error("Failed to generate interview questions", error);
       setQuestionsError("Question generation failed. Please try again.");
+      toast({
+        variant: "error",
+        title: "Question generation failed",
+        description: "We couldn't build interview questions right now.",
+      });
     } finally {
       setIsGeneratingQuestions(false);
     }
@@ -168,9 +180,19 @@ export function ResumeDetailModal({
       );
       setStartedCall(response.data.call);
       onCallUpdate?.(response.data.call);
+      toast({
+        variant: "success",
+        title: "Call started",
+        description: "The interview call has been queued successfully.",
+      });
     } catch (error) {
       console.error("Failed to start interview call", error);
       setCallError("Call initiation failed. Please try again.");
+      toast({
+        variant: "error",
+        title: "Call start failed",
+        description: "We couldn't start the interview call just now.",
+      });
     } finally {
       setIsStartingCall(false);
     }

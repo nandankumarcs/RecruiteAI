@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
-import { Briefcase, Calendar, ChevronLeft, Loader2, MapPin, PhoneCall, UploadCloud } from "lucide-react";
+import { Briefcase, Calendar, ChevronLeft, MapPin, PhoneCall, UploadCloud } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { CallRecord } from "@/lib/calls";
@@ -13,6 +13,8 @@ import { ResumeDetailModal } from "@/components/resumes/ResumeDetailModal";
 import { DeleteConfirmDialog } from "@/components/ui/DeleteConfirmDialog";
 import { CallsTable } from "@/components/calls/CallsTable";
 import { CallProgressIndicator } from "@/components/calls/CallProgressIndicator";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { useToast } from "@/context/ToastContext";
 
 interface Job {
   id: string;
@@ -32,6 +34,7 @@ const tabs: Array<{ key: DetailTab; label: string }> = [
 ];
 
 export function JobDetail() {
+  const { toast } = useToast();
   const { jobId } = useParams<{ jobId: string }>();
   const [job, setJob] = useState<Job | null>(null);
   const [resumes, setResumes] = useState<Resume[]>([]);
@@ -56,10 +59,15 @@ export function JobDetail() {
       setCalls(callsRes.data);
     } catch (error) {
       console.error("Failed to fetch job data", error);
+      toast({
+        variant: "error",
+        title: "Couldn't load this job",
+        description: "Try refreshing the page in a moment.",
+      });
     } finally {
       setIsLoading(false);
     }
-  }, [jobId]);
+  }, [jobId, toast]);
 
   useEffect(() => {
     void fetchJobData();
@@ -86,8 +94,18 @@ export function JobDetail() {
       await api.delete(`/resumes/${resumeToDelete}`);
       setResumes((prev) => prev.filter((r) => r.id !== resumeToDelete));
       setResumeToDelete(null);
+      toast({
+        variant: "success",
+        title: "Resume removed",
+        description: "The candidate record has been deleted.",
+      });
     } catch (error) {
       console.error("Failed to delete resume", error);
+      toast({
+        variant: "error",
+        title: "Delete failed",
+        description: "We couldn't remove that resume just now.",
+      });
     } finally {
       setIsDeleting(false);
     }
@@ -107,8 +125,23 @@ export function JobDetail() {
 
   if (isLoading) {
     return (
-      <div className="flex h-[50vh] items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <div className="space-y-6 pb-12">
+        <Skeleton className="h-6 w-28" />
+        <div className="space-y-3">
+          <Skeleton className="h-10 w-80" />
+          <Skeleton className="h-5 w-64" />
+        </div>
+        <Skeleton className="h-11 w-full rounded-xl" />
+        <div className="grid gap-8 lg:grid-cols-3">
+          <div className="space-y-4 lg:col-span-2">
+            <Skeleton className="h-10 w-48" />
+            <Skeleton className="h-72 w-full rounded-xl" />
+          </div>
+          <div className="space-y-8">
+            <Skeleton className="h-80 w-full rounded-xl" />
+            <Skeleton className="h-40 w-full rounded-xl" />
+          </div>
+        </div>
       </div>
     );
   }

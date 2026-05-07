@@ -7,7 +7,9 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+import httpx
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +28,7 @@ from app.models.question import InterviewQuestion
 from app.models.resume import Resume
 from app.models.user import User
 from app.schemas.call import CallEvaluationResponse, CallResponse, CallStartResponse
+from app.services.call_evaluation import auto_evaluate_call_if_ready
 from app.services.telephony import TelephonyService, get_telephony_service
 
 settings = get_settings()
@@ -92,6 +95,8 @@ async def _simulate_mock_call_progress(call_id: uuid.UUID) -> None:
                         "Candidate: I balanced retrieval quality, chunk sizing, and response latency to keep the experience useful and fast."
                     )
             await session.commit()
+        if status == "completed":
+            await auto_evaluate_call_if_ready(call_id)
 
 
 async def _get_owned_resume(
@@ -170,10 +175,12 @@ async def start_call(
 
     twiml_url = f"{settings.PUBLIC_URL}/webhooks/twilio/voice?call_resume_id={resume.id}"
     status_callback_url = f"{settings.PUBLIC_URL}/webhooks/twilio/status"
+    recording_callback_url = f"{settings.PUBLIC_URL}/webhooks/twilio/recording"
     outbound = telephony.start_outbound_call(
         to_number=resume.phone_number,
         twiml_url=twiml_url,
         status_callback_url=status_callback_url,
+        recording_callback_url=recording_callback_url,
     )
 
     call = Call(
@@ -230,6 +237,45 @@ async def get_call(
     if not call:
         raise NotFoundError(resource="Call")
     return call
+
+
+@router.get("/api/calls/{call_id}/recording")
+async def get_call_recording(
+    call_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Proxy a Twilio recording for authenticated frontend playback."""
+    result = await db.execute(
+        select(Call)
+        .join(Job, Call.job_id == Job.id)
+        .where(Call.id == call_id, Job.user_id == current_user.id)
+    )
+    call = result.scalar_one_or_none()
+    if not call:
+        raise NotFoundError(resource="Call")
+    if not call.recording_url:
+        raise NotFoundError(resource="Recording")
+
+    if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN:
+        raise ValidationError("Twilio credentials are not configured for recording playback.")
+
+    recording_url = call.recording_url
+    if not recording_url.endswith(".mp3") and not recording_url.endswith(".wav"):
+        recording_url = f"{recording_url}.mp3"
+
+    async with httpx.AsyncClient(
+        auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
+        follow_redirects=True,
+        timeout=30,
+    ) as client:
+        recording_response = await client.get(recording_url)
+        recording_response.raise_for_status()
+
+    return Response(
+        content=recording_response.content,
+        media_type=recording_response.headers.get("content-type", "audio/mpeg"),
+    )
 
 
 @router.websocket("/ws/calls/{call_id}")
