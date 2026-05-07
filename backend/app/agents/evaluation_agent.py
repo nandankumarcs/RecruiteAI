@@ -15,13 +15,10 @@ from app.config import get_settings
 from app.models.call import Call
 from app.models.job import Job
 from app.models.resume import Resume
+from app.services.ai_models import build_structured_chat_model
+from app.services.observability import summarize_text_model_usage
 
 settings = get_settings()
-
-try:
-    from langchain_openai import ChatOpenAI
-except Exception:  # pragma: no cover
-    ChatOpenAI = None
 
 
 class EvaluationResult(BaseModel):
@@ -43,21 +40,17 @@ class EvaluationAgent:
 
     def __init__(self, enable_llm: bool | None = None):
         self.enable_llm = (
-            bool(settings.OPENAI_API_KEY and ChatOpenAI is not None)
+            bool(settings.OPENAI_API_KEY)
             if enable_llm is None
             else enable_llm
         )
         self._structured_llm = None
 
-        if self.enable_llm and ChatOpenAI is not None:
-            llm = ChatOpenAI(
-                model=settings.OPENAI_MODEL,
-                api_key=settings.OPENAI_API_KEY,
-                temperature=0,
-            )
-            self._structured_llm = llm.with_structured_output(
-                EvaluationResult,
-                method="function_calling",
+        if self.enable_llm:
+            self._structured_llm = build_structured_chat_model(
+                schema=EvaluationResult,
+                run_name="evaluation_agent",
+                metadata={"component": "evaluation_agent"},
             )
 
     def fallback_evaluate(self, *, call: Call, job: Job, resume: Resume) -> EvaluationResult:
@@ -130,8 +123,19 @@ class EvaluationAgent:
         )
 
         try:
-            result = await self._structured_llm.ainvoke(prompt)
-            return EvaluationResult(**result.model_dump(), schema_version="evaluation.v1")
+            structured = await self._structured_llm.ainvoke(prompt)
+            parsed = structured.get("parsed") if isinstance(structured, dict) else None
+            raw = structured.get("raw") if isinstance(structured, dict) else None
+            if raw is not None:
+                summarize_text_model_usage(
+                    agent_name="evaluation_agent",
+                    model=settings.OPENAI_TEXT_MODEL or settings.OPENAI_MODEL,
+                    usage=getattr(raw, "usage_metadata", None),
+                    metadata={"job_title": job.title, "call_id": str(call.id)},
+                )
+            if parsed is None:
+                return fallback
+            return EvaluationResult(**parsed.model_dump(), schema_version="evaluation.v1")
         except Exception:
             return fallback
 

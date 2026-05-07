@@ -19,7 +19,7 @@ export function ResumeUploader({ jobId, onUploadSuccess }: ResumeUploaderProps) 
 
   // Simulated progress during parsing
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval> | undefined;
     if (isUploading && uploadProgress < 90) {
       interval = setInterval(() => {
         setUploadProgress((prev) => {
@@ -28,7 +28,9 @@ export function ResumeUploader({ jobId, onUploadSuccess }: ResumeUploaderProps) 
         });
       }, 600);
     }
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [isUploading, uploadProgress]);
 
   const addFiles = (newFiles: File[]) => {

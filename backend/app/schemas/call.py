@@ -12,6 +12,9 @@ class CallResponse(BaseModel):
     id: uuid.UUID
     resume_id: uuid.UUID
     job_id: uuid.UUID
+    provider: str
+    voice_runtime: str
+    provider_call_id: str | None
     twilio_call_sid: str | None
     status: str
     phone_number: str
@@ -20,6 +23,8 @@ class CallResponse(BaseModel):
     recording_path: str | None
     transcript: str | None
     ai_evaluation: dict | None
+    cost_breakdown: dict | None
+    latency_metrics: dict | None
     started_at: datetime | None
     ended_at: datetime | None
     created_at: datetime

@@ -13,6 +13,7 @@ from app.models.call import Call
 from app.models.job import Job
 from app.models.user import User
 from app.schemas.dashboard import DashboardMetricsResponse
+from app.services.pricing import hydrate_cost_breakdown
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -38,6 +39,19 @@ async def get_dashboard_metrics(
         for call in call_rows
         if isinstance(call.ai_evaluation, dict) and call.ai_evaluation.get("overall_score") is not None
     ]
+    hydrated_costs = [
+        hydrate_cost_breakdown(
+            existing=call.cost_breakdown,
+            provider=call.provider,
+            duration_seconds=call.duration_seconds,
+        )
+        for call in call_rows
+    ]
+    estimated_costs = [
+        float((cost or {}).get("estimated_total_usd") or 0)
+        for cost in hydrated_costs
+        if cost
+    ]
 
     return DashboardMetricsResponse(
         total_jobs=len(job_rows),
@@ -48,4 +62,12 @@ async def get_dashboard_metrics(
         active_calls=sum(1 for call in call_rows if call.status in {"queued", "ringing", "in_progress"}),
         completed_calls=sum(1 for call in call_rows if call.status == "completed"),
         average_score=(round(sum(scores) / len(scores), 1) if scores else None),
+        total_estimated_cost_usd=(round(sum(estimated_costs), 4) if estimated_costs else None),
+        average_cost_per_call_usd=(
+            round(sum(estimated_costs) / len(estimated_costs), 4) if estimated_costs else None
+        ),
+        realtime_calls=sum(1 for call in call_rows if call.voice_runtime == "openai_realtime"),
+        pipeline_calls=sum(
+            1 for call in call_rows if call.voice_runtime == "deepgram_openai_pipeline"
+        ),
     )

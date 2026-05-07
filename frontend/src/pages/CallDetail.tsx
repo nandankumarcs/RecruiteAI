@@ -2,9 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
+  Cpu,
+  DollarSign,
   Headphones,
   Loader2,
   PhoneCall,
+  Radio,
   Sparkles,
   Timer,
   UserRound,
@@ -294,6 +297,44 @@ export function CallDetail() {
         </Card>
       </div>
 
+      <div className="grid gap-6 md:grid-cols-3">
+        <Card className="border-border/50 bg-card/70">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <PhoneCall className="h-4 w-4 text-primary" />
+              Provider
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-xl font-semibold tracking-tight uppercase">
+            {call.provider}
+          </CardContent>
+        </Card>
+        <Card className="border-border/50 bg-card/70">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Cpu className="h-4 w-4 text-primary" />
+              Runtime
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-xl font-semibold tracking-tight capitalize">
+            {call.voice_runtime.replace(/_/g, " ")}
+          </CardContent>
+        </Card>
+        <Card className="border-border/50 bg-card/70">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <DollarSign className="h-4 w-4 text-primary" />
+              Estimated Cost
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-xl font-semibold tracking-tight">
+            {typeof call.cost_breakdown?.estimated_total_usd === "number"
+              ? `$${call.cost_breakdown.estimated_total_usd.toFixed(4)}`
+              : "—"}
+          </CardContent>
+        </Card>
+      </div>
+
       {["queued", "ringing", "in_progress"].includes(call.status) && (
         <CallProgressIndicator
           callId={call.id}
@@ -380,6 +421,49 @@ export function CallDetail() {
                   No recording is available for this call yet.
                 </div>
               )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/50 bg-card/70">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Radio className="h-4 w-4 text-primary" />
+                Runtime Breakdown
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="flex items-center justify-between rounded-lg border border-border/50 bg-background/50 px-4 py-3">
+                <span className="text-muted-foreground">LLM</span>
+                <span>
+                  {typeof call.cost_breakdown?.costs?.llm_usd === "number"
+                    ? `$${call.cost_breakdown.costs.llm_usd.toFixed(4)}`
+                    : "—"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-border/50 bg-background/50 px-4 py-3">
+                <span className="text-muted-foreground">STT</span>
+                <span>
+                  {typeof call.cost_breakdown?.costs?.stt_usd === "number"
+                    ? `$${call.cost_breakdown.costs.stt_usd.toFixed(4)}`
+                    : "—"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-border/50 bg-background/50 px-4 py-3">
+                <span className="text-muted-foreground">TTS</span>
+                <span>
+                  {typeof call.cost_breakdown?.costs?.tts_usd === "number"
+                    ? `$${call.cost_breakdown.costs.tts_usd.toFixed(4)}`
+                    : "—"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-border/50 bg-background/50 px-4 py-3">
+                <span className="text-muted-foreground">Telephony</span>
+                <span>
+                  {typeof call.cost_breakdown?.costs?.telephony_usd === "number"
+                    ? `$${call.cost_breakdown.costs.telephony_usd.toFixed(4)}`
+                    : "—"}
+                </span>
+              </div>
             </CardContent>
           </Card>
         </div>

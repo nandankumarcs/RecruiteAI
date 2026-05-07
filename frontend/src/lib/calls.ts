@@ -11,6 +11,9 @@ export interface CallRecord {
   id: string;
   resume_id: string;
   job_id: string;
+  provider: string;
+  voice_runtime: string;
+  provider_call_id: string | null;
   twilio_call_sid: string | null;
   status: CallStatus;
   phone_number: string;
@@ -23,6 +26,12 @@ export interface CallRecord {
     recommendation?: string;
     [key: string]: unknown;
   } | null;
+  cost_breakdown: {
+    estimated_total_usd?: number;
+    costs?: Record<string, number>;
+    [key: string]: unknown;
+  } | null;
+  latency_metrics: Record<string, unknown> | null;
   started_at: string | null;
   ended_at: string | null;
   created_at: string;

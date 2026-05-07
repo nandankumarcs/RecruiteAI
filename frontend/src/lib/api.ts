@@ -10,6 +10,22 @@ export const api = axios.create({
   },
 });
 
+export function getApiOrigin(): string {
+  try {
+    return new URL(API_BASE_URL).origin;
+  } catch {
+    return "http://127.0.0.1:8000";
+  }
+}
+
+export function getWebSocketBaseUrl(): string {
+  const origin = getApiOrigin();
+  if (origin.startsWith("https://")) {
+    return origin.replace("https://", "wss://");
+  }
+  return origin.replace("http://", "ws://");
+}
+
 // Interceptor to attach JWT token to every request
 api.interceptors.request.use(
   (config) => {

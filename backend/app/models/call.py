@@ -1,7 +1,4 @@
-"""
-Call model — represents a phone interview call with a candidate.
-Stores Twilio call SID, status, duration, recording, transcript, and AI evaluation.
-"""
+"""Call model for phone interview calls, runtime metrics, and cost observability."""
 
 import uuid
 from datetime import datetime
@@ -27,6 +24,9 @@ class Call(Base):
     job_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
+    provider: Mapped[str] = mapped_column(String(50), default="twilio")
+    voice_runtime: Mapped[str] = mapped_column(String(100), default="openai_realtime")
+    provider_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     twilio_call_sid: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(
         String(50), default="pending"
@@ -38,6 +38,8 @@ class Call(Base):
     recording_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_evaluation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    cost_breakdown: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    latency_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # ai_evaluation schema:
     # {
     #   overall_score: int (1-10),

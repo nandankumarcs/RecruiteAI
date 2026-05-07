@@ -29,6 +29,8 @@ from app.models.resume import Resume
 from app.models.user import User
 from app.schemas.call import CallEvaluationResponse, CallResponse, CallStartResponse
 from app.services.call_evaluation import auto_evaluate_call_if_ready
+from app.services.observability import append_latency_marker
+from app.services.pricing import hydrate_cost_breakdown, merge_cost_breakdown
 from app.services.telephony import TelephonyService, get_telephony_service
 
 settings = get_settings()
@@ -44,10 +46,18 @@ MOCK_CALL_STEPS = [
 
 
 def _call_snapshot(call: Call) -> dict:
+    cost_breakdown = hydrate_cost_breakdown(
+        existing=call.cost_breakdown,
+        provider=call.provider,
+        duration_seconds=call.duration_seconds,
+    )
     return {
         "id": str(call.id),
         "resume_id": str(call.resume_id),
         "job_id": str(call.job_id),
+        "provider": call.provider,
+        "voice_runtime": call.voice_runtime,
+        "provider_call_id": call.provider_call_id,
         "twilio_call_sid": call.twilio_call_sid,
         "status": call.status,
         "phone_number": call.phone_number,
@@ -56,6 +66,8 @@ def _call_snapshot(call: Call) -> dict:
         "recording_path": call.recording_path,
         "transcript": call.transcript,
         "ai_evaluation": call.ai_evaluation,
+        "cost_breakdown": cost_breakdown,
+        "latency_metrics": call.latency_metrics,
         "started_at": call.started_at.isoformat() if call.started_at else None,
         "ended_at": call.ended_at.isoformat() if call.ended_at else None,
         "created_at": call.created_at.isoformat() if call.created_at else None,
@@ -173,22 +185,32 @@ async def start_call(
 
     await _ensure_questions(db=db, job=job, resume=resume, generator=generator)
 
-    twiml_url = f"{settings.PUBLIC_URL}/webhooks/twilio/voice?call_resume_id={resume.id}"
-    status_callback_url = f"{settings.PUBLIC_URL}/webhooks/twilio/status"
-    recording_callback_url = f"{settings.PUBLIC_URL}/webhooks/twilio/recording"
+    outbound_urls = telephony.build_urls(resume_id=resume.id)
     outbound = telephony.start_outbound_call(
         to_number=resume.phone_number,
-        twiml_url=twiml_url,
-        status_callback_url=status_callback_url,
-        recording_callback_url=recording_callback_url,
+        answer_url=outbound_urls.answer_url,
+        status_callback_url=outbound_urls.status_callback_url,
+        recording_callback_url=outbound_urls.recording_callback_url,
     )
 
     call = Call(
         resume_id=resume.id,
         job_id=job.id,
+        provider=outbound.provider,
+        voice_runtime=settings.VOICE_RUNTIME,
+        provider_call_id=outbound.call_sid,
         twilio_call_sid=outbound.call_sid,
         status=outbound.status,
         phone_number=resume.phone_number,
+        latency_metrics=append_latency_marker(None, key="call_requested_at"),
+        cost_breakdown=merge_cost_breakdown(
+            None,
+            provider=outbound.provider,
+            notes=[
+                f"telephony_provider={outbound.provider}",
+                f"voice_runtime={settings.VOICE_RUNTIME}",
+            ],
+        ),
     )
     db.add(call)
     await db.flush()
@@ -218,7 +240,14 @@ async def list_calls(
         .where(Call.job_id == job_id)
         .order_by(Call.created_at.desc())
     )
-    return result.scalars().all()
+    calls = result.scalars().all()
+    for call in calls:
+        call.cost_breakdown = hydrate_cost_breakdown(
+            existing=call.cost_breakdown,
+            provider=call.provider,
+            duration_seconds=call.duration_seconds,
+        )
+    return calls
 
 
 @router.get("/api/calls/{call_id}", response_model=CallResponse)
@@ -236,6 +265,11 @@ async def get_call(
     call = result.scalar_one_or_none()
     if not call:
         raise NotFoundError(resource="Call")
+    call.cost_breakdown = hydrate_cost_breakdown(
+        existing=call.cost_breakdown,
+        provider=call.provider,
+        duration_seconds=call.duration_seconds,
+    )
     return call
 
 
@@ -257,18 +291,19 @@ async def get_call_recording(
     if not call.recording_url:
         raise NotFoundError(resource="Recording")
 
-    if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN:
-        raise ValidationError("Twilio credentials are not configured for recording playback.")
-
     recording_url = call.recording_url
     if not recording_url.endswith(".mp3") and not recording_url.endswith(".wav"):
         recording_url = f"{recording_url}.mp3"
+    client_kwargs: dict = {
+        "follow_redirects": True,
+        "timeout": 30,
+    }
+    if call.provider == "twilio":
+        if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN:
+            raise ValidationError("Twilio credentials are not configured for recording playback.")
+        client_kwargs["auth"] = (settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
 
-    async with httpx.AsyncClient(
-        auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
-        follow_redirects=True,
-        timeout=30,
-    ) as client:
+    async with httpx.AsyncClient(**client_kwargs) as client:
         recording_response = await client.get(recording_url)
         recording_response.raise_for_status()
 

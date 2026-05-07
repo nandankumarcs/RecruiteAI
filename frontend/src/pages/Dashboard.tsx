@@ -26,6 +26,10 @@ interface DashboardMetrics {
   active_calls: number;
   completed_calls: number;
   average_score: number | null;
+  total_estimated_cost_usd: number | null;
+  average_cost_per_call_usd: number | null;
+  realtime_calls: number;
+  pipeline_calls: number;
 }
 
 const jobCards = [
@@ -82,11 +86,11 @@ const callCards = [
     helper: "Calls finalized",
   },
   {
-    key: "average_score",
-    label: "AVG EVALUATION",
+    key: "total_estimated_cost_usd",
+    label: "EST. TOTAL COST",
     icon: Sparkles,
     tint: "text-rose-500",
-    helper: "AI quality score",
+    helper: "Observed spend",
   },
 ] as const;
 
@@ -145,6 +149,11 @@ export function Dashboard() {
 
     if (key === "average_score") {
       return metrics.average_score === null ? "—" : `${metrics.average_score.toFixed(1)}/10`;
+    }
+    if (key === "total_estimated_cost_usd") {
+      return metrics.total_estimated_cost_usd === null
+        ? "—"
+        : `$${metrics.total_estimated_cost_usd.toFixed(3)}`;
     }
 
     return metrics[key];
@@ -237,6 +246,64 @@ export function Dashboard() {
             </motion.div>
           ))}
         </motion.div>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-3">
+        <Card className="rounded-lg border-border/40 bg-card/40 backdrop-blur-xl p-6 shadow-md">
+          <CardHeader className="p-0 pb-4">
+            <CardTitle className="text-base font-black tracking-tight">Runtime Mix</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0 space-y-4">
+            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/40 px-4 py-3">
+              <span className="text-sm font-semibold text-muted-foreground">OpenAI Realtime</span>
+              <span className="text-xl font-black">{metrics?.realtime_calls ?? 0}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/40 px-4 py-3">
+              <span className="text-sm font-semibold text-muted-foreground">Deepgram Pipeline</span>
+              <span className="text-xl font-black">{metrics?.pipeline_calls ?? 0}</span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-lg border-border/40 bg-card/40 backdrop-blur-xl p-6 shadow-md">
+          <CardHeader className="p-0 pb-4">
+            <CardTitle className="text-base font-black tracking-tight">Call Quality</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0 space-y-4">
+            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/40 px-4 py-3">
+              <span className="text-sm font-semibold text-muted-foreground">Average evaluation</span>
+              <span className="text-xl font-black">
+                {metrics?.average_score === null || metrics?.average_score === undefined
+                  ? "—"
+                  : `${metrics.average_score.toFixed(1)}/10`}
+              </span>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/40 px-4 py-3">
+              <span className="text-sm font-semibold text-muted-foreground">Completed calls</span>
+              <span className="text-xl font-black">{metrics?.completed_calls ?? 0}</span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-lg border-border/40 bg-card/40 backdrop-blur-xl p-6 shadow-md">
+          <CardHeader className="p-0 pb-4">
+            <CardTitle className="text-base font-black tracking-tight">Efficiency</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0 space-y-4">
+            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/40 px-4 py-3">
+              <span className="text-sm font-semibold text-muted-foreground">Average cost / call</span>
+              <span className="text-xl font-black">
+                {metrics?.average_cost_per_call_usd === null || metrics?.average_cost_per_call_usd === undefined
+                  ? "—"
+                  : `$${metrics.average_cost_per_call_usd.toFixed(3)}`}
+              </span>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/40 px-4 py-3">
+              <span className="text-sm font-semibold text-muted-foreground">Live calls</span>
+              <span className="text-xl font-black">{metrics?.active_calls ?? 0}</span>
+            </div>
+          </CardContent>
+        </Card>
       </section>
     </div>
   );

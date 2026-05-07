@@ -23,6 +23,8 @@ from app.models.job import Job
 from app.models.question import InterviewQuestion
 from app.models.resume import Resume
 from app.services.call_evaluation import auto_evaluate_call_if_ready
+from app.services.observability import append_latency_marker, merge_latency_metric
+from app.services.pricing import estimate_telephony_cost, merge_cost_breakdown
 from app.services.telephony import get_telephony_service
 
 settings = get_settings()
@@ -292,7 +294,7 @@ class RealtimeBridge:
         self,
         *,
         call_id: uuid.UUID | None,
-        twilio_call_sid: str | None,
+        provider_call_id: str | None,
         message: str,
     ) -> None:
         cleaned = self._clean_message_text(message)
@@ -303,8 +305,8 @@ class RealtimeBridge:
                 cleaned,
                 item_key=f"closing-{uuid.uuid4()}",
             )
-        if twilio_call_sid:
-            await asyncio.to_thread(self.telephony.say_and_hangup, twilio_call_sid, cleaned)
+        if provider_call_id:
+            await asyncio.to_thread(self.telephony.say_and_hangup, provider_call_id, cleaned)
 
     async def _update_session_instructions(
         self,
@@ -451,15 +453,26 @@ class RealtimeBridge:
             call.status = status
             await session.commit()
 
-    async def _update_call_started(self, call_id: uuid.UUID, twilio_call_sid: str | None) -> None:
+    async def _update_call_started(
+        self,
+        call_id: uuid.UUID,
+        provider: str,
+        provider_call_id: str | None,
+    ) -> None:
         async with async_session_factory() as session:
             call = await session.get(Call, call_id)
             if call is None:
                 return
             call.status = "in_progress"
             call.started_at = call.started_at or datetime.now(timezone.utc)
-            if twilio_call_sid and not call.twilio_call_sid:
-                call.twilio_call_sid = twilio_call_sid
+            call.provider = call.provider or provider
+            if provider_call_id and not call.provider_call_id:
+                call.provider_call_id = provider_call_id
+            if provider == "twilio" and provider_call_id and not call.twilio_call_sid:
+                call.twilio_call_sid = provider_call_id
+            call.latency_metrics = append_latency_marker(
+                call.latency_metrics, key="call_answered_at"
+            )
             await session.commit()
 
     async def _update_call_finished(self, call_id: uuid.UUID) -> None:
@@ -474,10 +487,18 @@ class RealtimeBridge:
                 call.duration_seconds = max(
                     1, int((call.ended_at - call.started_at).total_seconds())
                 )
+            call.cost_breakdown = merge_cost_breakdown(
+                call.cost_breakdown,
+                provider=call.provider or "unknown",
+                telephony_cost_usd=estimate_telephony_cost(
+                    provider=call.provider or "",
+                    duration_seconds=call.duration_seconds,
+                ),
+            )
             await session.commit()
         await auto_evaluate_call_if_ready(call_id)
 
-    async def handle(self, websocket: WebSocket, resume_id: uuid.UUID) -> None:
+    async def handle(self, websocket: WebSocket, resume_id: uuid.UUID, provider: str = "twilio") -> None:
         if not self.api_key:
             await websocket.accept()
             await websocket.close(code=1011, reason="OpenAI API key is not configured.")
@@ -488,13 +509,15 @@ class RealtimeBridge:
         state = ConversationState()
 
         await websocket.accept()
-        twilio_stream_sid: str | None = None
-        twilio_call_sid: str | None = call.twilio_call_sid if call else None
+        stream_id: str | None = None
+        provider_call_id: str | None = call.provider_call_id if call else call.twilio_call_sid if call else None
         stop_event = asyncio.Event()
         should_hang_up = False
         assistant_response_active = False
         assistant_cancel_requested = False
         initial_prompt_sent = False
+        first_assistant_audio_sent = False
+        first_user_transcript_seen = False
 
         realtime_url = f"wss://api.openai.com/v1/realtime?model={self.model}"
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -509,7 +532,8 @@ class RealtimeBridge:
             )
 
             async def forward_openai_to_twilio() -> None:
-                nonlocal assistant_cancel_requested, assistant_response_active, should_hang_up, twilio_stream_sid
+                nonlocal assistant_cancel_requested, assistant_response_active, should_hang_up, stream_id
+                nonlocal first_assistant_audio_sent, first_user_transcript_seen
                 try:
                     async for message in openai_ws:
                         data = json.loads(message)
@@ -517,19 +541,29 @@ class RealtimeBridge:
 
                         if event_type in {"response.created", "response.output_audio.delta"}:
                             assistant_response_active = True
-                        if event_type == "response.output_audio.delta" and twilio_stream_sid:
+                        if event_type == "response.output_audio.delta" and stream_id:
                             delta = data.get("delta")
                             if delta:
+                                if call_id and not first_assistant_audio_sent:
+                                    first_assistant_audio_sent = True
+                                    async with async_session_factory() as session:
+                                        call_record = await session.get(Call, call_id)
+                                        if call_record is not None:
+                                            call_record.latency_metrics = append_latency_marker(
+                                                call_record.latency_metrics,
+                                                key="first_assistant_audio_at",
+                                            )
+                                            await session.commit()
                                 await websocket.send_json(
-                                    {
-                                        "event": "media",
-                                        "streamSid": twilio_stream_sid,
-                                        "media": {"payload": delta},
-                                    }
+                                    self._build_audio_event(
+                                        provider=provider,
+                                        stream_id=stream_id,
+                                        payload=delta,
+                                    )
                                 )
-                        elif event_type == "input_audio_buffer.speech_started" and twilio_stream_sid:
+                        elif event_type == "input_audio_buffer.speech_started" and stream_id:
                             await websocket.send_json(
-                                {"event": "clear", "streamSid": twilio_stream_sid}
+                                self._build_clear_audio_event(provider=provider, stream_id=stream_id)
                             )
                             if assistant_response_active:
                                 assistant_cancel_requested = True
@@ -543,6 +577,16 @@ class RealtimeBridge:
                             await self._append_message(
                                 call_id, "user", transcript, item_key=item_key
                             )
+                            if not first_user_transcript_seen:
+                                first_user_transcript_seen = True
+                                async with async_session_factory() as session:
+                                    call_record = await session.get(Call, call_id)
+                                    if call_record is not None:
+                                        call_record.latency_metrics = append_latency_marker(
+                                            call_record.latency_metrics,
+                                            key="first_user_transcript_at",
+                                        )
+                                        await session.commit()
                             state_changed = False
                             if self._is_end_intent(transcript) or self._is_negative_or_decline(transcript):
                                 if not state.termination_requested:
@@ -564,7 +608,7 @@ class RealtimeBridge:
                             if state.termination_requested:
                                 await self._close_call_with_message(
                                     call_id=call_id,
-                                    twilio_call_sid=twilio_call_sid,
+                                    provider_call_id=provider_call_id,
                                     message="Understood. Thank you for your time today. Goodbye.",
                                 )
                                 stop_event.set()
@@ -572,7 +616,7 @@ class RealtimeBridge:
                             if state.off_topic_count >= 2:
                                 await self._close_call_with_message(
                                     call_id=call_id,
-                                    twilio_call_sid=twilio_call_sid,
+                                    provider_call_id=provider_call_id,
                                     message="It sounds like now is not the right time for this screening. Thank you for your time. Goodbye.",
                                 )
                                 stop_event.set()
@@ -611,8 +655,8 @@ class RealtimeBridge:
                         elif event_type == "response.done" and call_id and should_hang_up:
                             assistant_response_active = False
                             assistant_cancel_requested = False
-                            if twilio_call_sid:
-                                await asyncio.to_thread(self.telephony.end_call, twilio_call_sid)
+                            if provider_call_id:
+                                await asyncio.to_thread(self.telephony.end_call, provider_call_id)
                             stop_event.set()
                         elif event_type == "response.done":
                             assistant_response_active = False
@@ -648,10 +692,24 @@ class RealtimeBridge:
 
                     if event == "start":
                         start = data.get("start", {})
-                        twilio_stream_sid = data.get("streamSid")
-                        twilio_call_sid = start.get("callSid")
+                        stream_id = self._extract_stream_id(data)
+                        provider_call_id = self._extract_provider_call_id(
+                            provider=provider,
+                            payload=data,
+                        ) or provider_call_id
                         if call_id:
-                            await self._update_call_started(call_id, twilio_call_sid)
+                            await self._update_call_started(
+                                call_id,
+                                provider,
+                                provider_call_id,
+                            )
+                            async with async_session_factory() as session:
+                                call_record = await session.get(Call, call_id)
+                                if call_record is not None:
+                                    call_record.latency_metrics = append_latency_marker(
+                                        call_record.latency_metrics, key="stream_connected_at"
+                                    )
+                                    await session.commit()
                         if not initial_prompt_sent:
                             await openai_ws.send(json.dumps({"type": "response.create"}))
                             initial_prompt_sent = True
@@ -675,6 +733,39 @@ class RealtimeBridge:
                 if call_id:
                     await self._update_call_finished(call_id)
                 await websocket.close()
+
+    @staticmethod
+    def _extract_stream_id(payload: dict) -> str | None:
+        return payload.get("streamSid") or payload.get("streamId") or payload.get("start", {}).get("streamId")
+
+    @staticmethod
+    def _build_audio_event(*, provider: str, stream_id: str, payload: str) -> dict:
+        if provider == "plivo":
+            return {
+                "event": "playAudio",
+                "media": {
+                    "contentType": "audio/x-mulaw",
+                    "sampleRate": "8000",
+                    "payload": payload,
+                },
+            }
+        return {
+            "event": "media",
+            "streamSid": stream_id,
+            "media": {"payload": payload},
+        }
+
+    @staticmethod
+    def _build_clear_audio_event(*, provider: str, stream_id: str) -> dict:
+        if provider == "plivo":
+            return {"event": "clearAudio", "streamId": stream_id}
+        return {"event": "clear", "streamSid": stream_id}
+
+    @staticmethod
+    def _extract_provider_call_id(*, provider: str, payload: dict) -> str | None:
+        if provider == "plivo":
+            return payload.get("start", {}).get("callId")
+        return payload.get("start", {}).get("callSid")
 
 
 def get_realtime_bridge() -> RealtimeBridge:

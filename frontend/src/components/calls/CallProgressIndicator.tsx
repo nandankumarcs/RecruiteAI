@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, PhoneCall } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import type { CallRecord } from "@/lib/calls";
+import { getWebSocketBaseUrl } from "@/lib/api";
 
 interface CallProgressIndicatorProps {
   callId: string;
@@ -20,24 +21,29 @@ export function CallProgressIndicator({
 }: CallProgressIndicatorProps) {
   const [call, setCall] = useState<CallRecord | null>(initialCall ?? null);
   const [connectionState, setConnectionState] = useState<"connecting" | "live" | "closed">("connecting");
+  const onUpdateRef = useRef(onUpdate);
 
   useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://127.0.0.1:8000/ws/calls/${callId}`);
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
+
+  useEffect(() => {
+    setConnectionState("connecting");
+    const socket = new WebSocket(`${getWebSocketBaseUrl()}/ws/calls/${callId}`);
 
     socket.onopen = () => setConnectionState("live");
     socket.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       if (payload.type === "call_update" && payload.call) {
         setCall(payload.call);
-        onUpdate?.(payload.call);
+        onUpdateRef.current?.(payload.call);
       }
     };
     socket.onclose = () => setConnectionState("closed");
     socket.onerror = () => setConnectionState("closed");
 
     return () => socket.close();
-  }, [callId, onUpdate]);
+  }, [callId]);
 
   const currentStepIndex = useMemo(() => {
     if (!call) return 0;

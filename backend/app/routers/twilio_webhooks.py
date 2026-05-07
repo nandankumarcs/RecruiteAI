@@ -15,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.database import get_db
 from app.models.call import Call
+from app.services.observability import append_latency_marker
+from app.services.pricing import estimate_telephony_cost, merge_cost_breakdown
 from app.services.call_evaluation import auto_evaluate_call_if_ready, call_is_finished
-from app.services.realtime_bridge import RealtimeBridge, get_realtime_bridge
+from app.services.voice_runtime import VoiceRuntimeService, get_voice_runtime_service
 
 settings = get_settings()
 
@@ -89,14 +91,25 @@ async def twilio_status_webhook(
         return Response(status_code=204)
 
     call.status = STATUS_MAP.get(CallStatus, call.status)
+    call.provider = "twilio"
     if call.status == "in_progress" and call.started_at is None:
         call.started_at = datetime.now(timezone.utc)
+        call.latency_metrics = append_latency_marker(call.latency_metrics, key="call_answered_at")
     if call_is_finished(call.status) and call.ended_at is None:
         call.ended_at = datetime.now(timezone.utc)
     if CallDuration and CallDuration.isdigit():
         call.duration_seconds = int(CallDuration)
     if RecordingUrl:
         call.recording_url = RecordingUrl
+    if call.duration_seconds:
+        call.cost_breakdown = merge_cost_breakdown(
+            call.cost_breakdown,
+            provider="twilio",
+            telephony_cost_usd=estimate_telephony_cost(
+                provider="twilio",
+                duration_seconds=call.duration_seconds,
+            ),
+        )
     await db.flush()
     call_id = call.id
     await db.commit()
@@ -123,6 +136,15 @@ async def twilio_recording_webhook(
         call.recording_path = RecordingUrl
     if RecordingStatus == "completed" and call.status == "in_progress":
         call.status = "completed"
+    if call.duration_seconds:
+        call.cost_breakdown = merge_cost_breakdown(
+            call.cost_breakdown,
+            provider="twilio",
+            telephony_cost_usd=estimate_telephony_cost(
+                provider="twilio",
+                duration_seconds=call.duration_seconds,
+            ),
+        )
     call_id = call.id
     await db.flush()
     await db.commit()
@@ -141,7 +163,7 @@ async def twilio_stream_status_webhook():
 async def twilio_media_stream(
     websocket: WebSocket,
     resume_id: uuid.UUID,
-    bridge: RealtimeBridge = Depends(get_realtime_bridge),
+    bridge: VoiceRuntimeService = Depends(get_voice_runtime_service),
 ):
     """Bidirectional websocket endpoint for Twilio media streams."""
-    await bridge.handle(websocket, resume_id)
+    await bridge.handle(websocket, resume_id, provider="twilio")

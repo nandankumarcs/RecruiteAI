@@ -40,7 +40,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { DeleteConfirmDialog } from "@/components/ui/DeleteConfirmDialog"
 import { Badge } from "@/components/ui/badge"
-import { Calendar, Briefcase, ChevronRight, Filter, LayoutGrid, List as ListIcon } from "lucide-react"
+import { Calendar, Briefcase } from "lucide-react"
 import { toast } from "sonner"
 
 type JobFormState = {
@@ -75,7 +75,6 @@ export function Jobs() {
   const [statusFilter, setStatusFilter] = useState<"all" | JobStatus>("all")
   const [form, setForm] = useState<JobFormState>(initialFormState)
   const [jobToDelete, setJobToDelete] = useState<Job | null>(null)
-  const [viewMode, setViewMode] = useState<"table" | "grid">("table")
 
   const fetchJobs = async () => {
     try {

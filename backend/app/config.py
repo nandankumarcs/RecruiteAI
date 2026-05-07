@@ -29,15 +29,48 @@ class Settings(BaseSettings):
     # --- OpenAI ---
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_TEXT_MODEL: str = "gpt-4o-mini"
     OPENAI_REALTIME_MODEL: str = "gpt-4o-mini-realtime-preview"
     OPENAI_REALTIME_VOICE: str = "coral"
     OPENAI_TRANSCRIPTION_MODEL: str = "whisper-1"
+    OPENAI_TEXT_INPUT_COST_PER_1M: float = 0.15
+    OPENAI_TEXT_OUTPUT_COST_PER_1M: float = 0.6
+    OPENAI_REALTIME_TEXT_INPUT_COST_PER_1M: float = 0.6
+    OPENAI_REALTIME_TEXT_OUTPUT_COST_PER_1M: float = 2.4
+    OPENAI_REALTIME_AUDIO_INPUT_COST_PER_1M: float = 10.0
+    OPENAI_REALTIME_AUDIO_OUTPUT_COST_PER_1M: float = 20.0
+    OPENAI_REALTIME_RUNTIME_LABEL: str = "openai_realtime"
 
     # --- Twilio ---
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_PHONE_NUMBER: str = ""
     TWILIO_MOCK_MODE: bool = True
+    TWILIO_ESTIMATED_COST_PER_MINUTE_USD: float = 0.013
+
+    # --- Plivo ---
+    PLIVO_AUTH_ID: str = ""
+    PLIVO_AUTH_TOKEN: str = ""
+    PLIVO_PHONE_NUMBER: str = ""
+    PLIVO_MOCK_MODE: bool = True
+    PLIVO_ESTIMATED_COST_PER_MINUTE_USD: float = 0.01
+
+    # --- Deepgram ---
+    DEEPGRAM_API_KEY: str = ""
+    DEEPGRAM_STT_MODEL: str = "nova-3"
+    DEEPGRAM_TTS_MODEL: str = "aura-2-thalia-en"
+    DEEPGRAM_STT_COST_PER_MINUTE_USD: float = 0.0043
+    DEEPGRAM_TTS_COST_PER_1K_CHARS_USD: float = 0.03
+
+    # --- Runtime selection ---
+    TELEPHONY_PROVIDER: str = "twilio"  # twilio, plivo, mock
+    VOICE_RUNTIME: str = "openai_realtime"  # openai_realtime, deepgram_openai_pipeline
+
+    # --- LangSmith ---
+    LANGSMITH_API_KEY: str = ""
+    LANGSMITH_PROJECT: str = "RecruiteAI"
+    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
+    LANGSMITH_TRACING: bool = False
 
     # --- Storage ---
     STORAGE_PROVIDER: str = "local"  # "local" or "s3"

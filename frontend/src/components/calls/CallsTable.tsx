@@ -26,8 +26,11 @@ export function CallsTable({ calls }: CallsTableProps) {
         <TableHeader className="bg-muted/50">
           <TableRow>
             <TableHead className="font-semibold">Phone</TableHead>
+            <TableHead className="font-semibold">Provider</TableHead>
             <TableHead className="font-semibold">Status</TableHead>
+            <TableHead className="font-semibold">Runtime</TableHead>
             <TableHead className="font-semibold">Score</TableHead>
+            <TableHead className="font-semibold">Cost</TableHead>
             <TableHead className="font-semibold">Created</TableHead>
             <TableHead className="text-right font-semibold">Action</TableHead>
           </TableRow>
@@ -36,14 +39,23 @@ export function CallsTable({ calls }: CallsTableProps) {
           {calls.map((call) => (
             <TableRow key={call.id} className="transition-colors hover:bg-muted/30">
               <TableCell className="font-medium">{call.phone_number}</TableCell>
+              <TableCell className="uppercase text-muted-foreground">{call.provider}</TableCell>
               <TableCell>
                 <Badge variant="outline" className="capitalize">
                   {call.status.replace("_", " ")}
                 </Badge>
               </TableCell>
+              <TableCell className="text-muted-foreground">
+                {call.voice_runtime.replace(/_/g, " ")}
+              </TableCell>
               <TableCell>
                 {typeof call.ai_evaluation?.overall_score === "number"
                   ? `${call.ai_evaluation.overall_score}/10`
+                  : "—"}
+              </TableCell>
+              <TableCell>
+                {typeof call.cost_breakdown?.estimated_total_usd === "number"
+                  ? `$${call.cost_breakdown.estimated_total_usd.toFixed(4)}`
                   : "—"}
               </TableCell>
               <TableCell className="text-muted-foreground">

@@ -1,37 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Award,
   Briefcase,
   PhoneCall,
   FileQuestion,
-  FileText,
-  FolderKanban,
-  GraduationCap,
   Loader2,
   Mail,
   Phone,
   Sparkles,
-  Code,
-  MapPin,
   Calendar,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api";
+import { api, getWebSocketBaseUrl } from "@/lib/api";
 import type { CallRecord } from "@/lib/calls";
 import { useToast } from "@/context/ToastContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 import type { Resume } from "./ResumeTable";
 
@@ -85,6 +72,11 @@ export function ResumeDetailModal({
   const [isStartingCall, setIsStartingCall] = useState(false);
   const [callError, setCallError] = useState<string | null>(null);
   const [startedCall, setStartedCall] = useState<CallRecord | null>(null);
+  const onCallUpdateRef = useRef(onCallUpdate);
+
+  useEffect(() => {
+    onCallUpdateRef.current = onCallUpdate;
+  }, [onCallUpdate]);
 
   useEffect(() => {
     if (!resume || !isOpen || resume.status !== "parsed") {
@@ -118,29 +110,24 @@ export function ResumeDetailModal({
   useEffect(() => {
     if (!startedCall?.id || !isOpen) return;
 
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://127.0.0.1:8000/ws/calls/${startedCall.id}`);
+    const socket = new WebSocket(`${getWebSocketBaseUrl()}/ws/calls/${startedCall.id}`);
 
     socket.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       if (payload.type === "call_update" && payload.call) {
         setStartedCall(payload.call);
-        onCallUpdate?.(payload.call);
+        onCallUpdateRef.current?.(payload.call);
       }
     };
 
     return () => socket.close();
-  }, [startedCall?.id, isOpen, onCallUpdate]);
+  }, [startedCall?.id, isOpen]);
 
   if (!resume) return null;
 
   const parsedData = resume.parsed_data || {};
   const skills = parsedData.skills || [];
   const experience = parsedData.experience || [];
-  const projects = parsedData.projects || [];
-  const education = parsedData.education || [];
-  const certifications = parsedData.certifications || [];
-  const skillCategories = parsedData.skill_categories || [];
 
   const handleGenerateQuestions = async () => {
     if (!resume) return;
@@ -351,6 +338,11 @@ export function ResumeDetailModal({
                           </span>
                         </div>
                       )}
+                      {callError && (
+                        <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-4 py-3 text-xs font-bold uppercase tracking-wider text-destructive">
+                          {callError}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -370,10 +362,16 @@ export function ResumeDetailModal({
                     disabled={resume.status !== "parsed" || isGeneratingQuestions}
                     className="h-8 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-primary/10 hover:text-primary transition-all"
                   >
-                    {isGeneratingQuestions ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Sparkles className="h-3 w-3 mr-1" />}
+                    {isGeneratingQuestions || isQuestionsLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Sparkles className="h-3 w-3 mr-1" />}
                     {questions.length > 0 ? "Regenerate" : "Generate List"}
                   </Button>
                 </div>
+
+                {questionsError && (
+                  <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-4 py-3 text-xs font-bold uppercase tracking-wider text-destructive">
+                    {questionsError}
+                  </div>
+                )}
 
                 {questions.length > 0 ? (
                   <div className="grid gap-5">

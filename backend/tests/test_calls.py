@@ -21,7 +21,7 @@ from app.models.call import Call
 from app.models.job import Job
 from app.models.question import InterviewQuestion
 from app.models.resume import Resume
-from app.services.telephony import OutboundCallResult, get_telephony_service
+from app.services.telephony import OutboundCallResult, OutboundCallUrls, get_telephony_service
 
 
 class FakeQuestionGeneratorAgent:
@@ -49,17 +49,25 @@ class FakeTelephonyService:
     def __init__(self):
         self.ended_call_sids: list[str] = []
         self.redirected_calls: list[tuple[str, str]] = []
+        self.enable_mock_progression = True
+
+    def build_urls(self, *, resume_id: uuid.UUID):
+        return OutboundCallUrls(
+            answer_url=f"https://example.test/webhooks/twilio/voice?call_resume_id={resume_id}",
+            status_callback_url="https://example.test/webhooks/twilio/status",
+            recording_callback_url="https://example.test/webhooks/twilio/recording",
+        )
 
     def start_outbound_call(
         self,
         *,
         to_number: str,
-        twiml_url: str,
+        answer_url: str,
         status_callback_url: str,
         recording_callback_url: str | None = None,
     ):
         assert to_number
-        assert "/webhooks/twilio/voice?call_resume_id=" in twiml_url
+        assert "/webhooks/twilio/voice?call_resume_id=" in answer_url
         assert status_callback_url.endswith("/webhooks/twilio/status")
         assert recording_callback_url is not None
         assert recording_callback_url.endswith("/webhooks/twilio/recording")
@@ -74,6 +82,9 @@ class FakeTelephonyService:
 
     def say_and_hangup(self, call_sid: str, message: str):
         self.redirected_calls.append((call_sid, message))
+
+    def start_recording(self, call_sid: str, callback_url: str | None = None):
+        return None
 
 
 class FakeEvaluationAgent:
@@ -219,9 +230,16 @@ async def test_start_call_rejects_unparsed_resume(
 async def test_list_calls_for_job(
     authenticated_client: AsyncClient,
     parsed_resume_for_calls: tuple[Job, Resume],
+    db_session,
 ):
     job, resume = parsed_resume_for_calls
-    await authenticated_client.post(f"/api/resumes/{resume.id}/calls/start")
+    create_response = await authenticated_client.post(f"/api/resumes/{resume.id}/calls/start")
+    call_id = create_response.json()["call"]["id"]
+    call = await db_session.get(Call, call_id)
+    call.provider = "twilio"
+    call.duration_seconds = 120
+    call.cost_breakdown = None
+    await db_session.commit()
 
     response = await authenticated_client.get(f"/api/jobs/{job.id}/calls")
 
@@ -229,21 +247,30 @@ async def test_list_calls_for_job(
     data = response.json()
     assert len(data) == 1
     assert data[0]["phone_number"] == "+1 333 444 5555"
+    assert data[0]["cost_breakdown"]["costs"]["telephony_usd"] > 0
+    assert data[0]["cost_breakdown"]["estimated_total_usd"] > 0
 
 
 @pytest.mark.asyncio
 async def test_get_call_detail(
     authenticated_client: AsyncClient,
     parsed_resume_for_calls: tuple[Job, Resume],
+    db_session,
 ):
     _job, resume = parsed_resume_for_calls
     create_response = await authenticated_client.post(f"/api/resumes/{resume.id}/calls/start")
     call_id = create_response.json()["call"]["id"]
+    call = await db_session.get(Call, call_id)
+    call.provider = "twilio"
+    call.duration_seconds = 90
+    call.cost_breakdown = None
+    await db_session.commit()
 
     response = await authenticated_client.get(f"/api/calls/{call_id}")
 
     assert response.status_code == 200
     assert response.json()["id"] == call_id
+    assert response.json()["cost_breakdown"]["costs"]["telephony_usd"] > 0
 
 
 @pytest.mark.asyncio
@@ -570,16 +597,20 @@ async def test_dashboard_metrics_include_call_stats(
                 resume_id=resume.id,
                 job_id=job.id,
                 twilio_call_sid="CA_DASH_1",
+                provider="twilio",
                 status="completed",
                 phone_number=resume.phone_number,
+                duration_seconds=180,
                 ai_evaluation={"overall_score": 8},
             ),
             Call(
                 resume_id=resume.id,
                 job_id=job.id,
                 twilio_call_sid="CA_DASH_2",
+                provider="twilio",
                 status="in_progress",
                 phone_number=resume.phone_number,
+                duration_seconds=60,
             ),
         ]
     )
@@ -595,6 +626,9 @@ async def test_dashboard_metrics_include_call_stats(
     assert data["active_calls"] == 1
     assert data["completed_calls"] == 1
     assert data["average_score"] == 8.0
+    assert data["total_estimated_cost_usd"] is not None
+    assert data["total_estimated_cost_usd"] > 0
+    assert data["average_cost_per_call_usd"] is not None
 
 
 @pytest.mark.asyncio

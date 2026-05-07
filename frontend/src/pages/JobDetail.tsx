@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
-import { Briefcase, Calendar, ChevronLeft, MapPin, PhoneCall, UploadCloud } from "lucide-react";
+import { Calendar, ChevronLeft, MapPin, PhoneCall, UploadCloud } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { CallRecord } from "@/lib/calls";
@@ -117,13 +117,13 @@ export function JobDetail() {
     setViewingResume(resume);
   };
 
-  const handleCallUpdate = (updatedCall: CallRecord) => {
+  const handleCallUpdate = useCallback((updatedCall: CallRecord) => {
     setCalls((previous) => {
       const existing = previous.find((call) => call.id === updatedCall.id);
       if (!existing) return [updatedCall, ...previous];
       return previous.map((call) => (call.id === updatedCall.id ? updatedCall : call));
     });
-  };
+  }, []);
 
   if (isLoading) {
     return (

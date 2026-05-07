@@ -19,13 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from pypdf import PdfReader
 
 from app.config import get_settings
+from app.services.ai_models import build_structured_chat_model
+from app.services.observability import summarize_text_model_usage
 
 settings = get_settings()
-
-try:
-    from langchain_openai import ChatOpenAI
-except Exception:  # pragma: no cover - import guard for constrained envs
-    ChatOpenAI = None
 
 
 PHONE_REGEX = re.compile(
@@ -141,19 +138,18 @@ class ResumeParserAgent:
 
     def __init__(self, enable_llm: bool | None = None):
         self.enable_llm = (
-            bool(settings.OPENAI_API_KEY and ChatOpenAI is not None)
+            bool(settings.OPENAI_API_KEY)
             if enable_llm is None
             else enable_llm
         )
         self._structured_llm = None
 
-        if self.enable_llm and ChatOpenAI is not None:
-            llm = ChatOpenAI(
-                model=settings.OPENAI_MODEL,
-                api_key=settings.OPENAI_API_KEY,
-                temperature=0,
+        if self.enable_llm:
+            self._structured_llm = build_structured_chat_model(
+                schema=StructuredResumeData,
+                run_name="resume_parser",
+                metadata={"component": "resume_parser"},
             )
-            self._structured_llm = llm.with_structured_output(StructuredResumeData)
 
     def extract_text(self, file_path: str, file_type: str) -> str:
         """Extract raw text from a supported resume file."""
@@ -818,8 +814,19 @@ class ResumeParserAgent:
         )
 
         try:
-            structured = await self._structured_llm.ainvoke(prompt)
-            normalized_primary = self.normalize_structured_data(structured, raw_text)
+            result = await self._structured_llm.ainvoke(prompt)
+            parsed = result.get("parsed") if isinstance(result, dict) else None
+            raw = result.get("raw") if isinstance(result, dict) else None
+            if raw is not None:
+                summarize_text_model_usage(
+                    agent_name="resume_parser",
+                    model=settings.OPENAI_TEXT_MODEL or settings.OPENAI_MODEL,
+                    usage=getattr(raw, "usage_metadata", None),
+                    metadata={"has_links": "linkedin" in raw_text.lower() or "github" in raw_text.lower()},
+                )
+            if parsed is None:
+                return fallback
+            normalized_primary = self.normalize_structured_data(parsed, raw_text)
             return self.merge_structured_data(normalized_primary, fallback)
         except Exception:
             return fallback
