@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap');
+
 @import "tailwindcss";
 
 @plugin "tailwindcss-animate";
@@ -5,7 +7,8 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
   
   --color-border: var(--border);
   --color-input: var(--input);
@@ -41,7 +44,7 @@
 
 @layer base {
   :root {
-    --background: hsl(0 0% 100%);
+    --background: hsl(210 40% 98%);
     --foreground: hsl(222.2 84% 4.9%);
     --card: hsl(0 0% 100%);
     --card-foreground: hsl(222.2 84% 4.9%);
@@ -52,19 +55,19 @@
     --secondary: hsl(210 40% 96.1%);
     --secondary-foreground: hsl(222.2 47.4% 11.2%);
     --muted: hsl(210 40% 96.1%);
-    --muted-foreground: hsl(215.4 16.3% 46.9%);
+    --muted-foreground: hsl(215.4 25% 40%); /* Increased contrast */
     --accent: hsl(210 40% 96.1%);
     --accent-foreground: hsl(222.2 47.4% 11.2%);
     --destructive: hsl(0 84.2% 60.2%);
     --destructive-foreground: hsl(210 40% 98%);
-    --border: hsl(214.3 31.8% 91.4%);
-    --input: hsl(214.3 31.8% 91.4%);
+    --border: hsl(214.3 32% 85%); /* Increased contrast */
+    --input: hsl(214.3 32% 85%); /* Increased contrast */
     --ring: hsl(221.2 83.2% 53.3%);
-    --radius: 0.5rem;
+    --radius: 0.5rem; /* Subtitled 8px radius */
   }
  
   .dark {
-    --background: hsl(222.2 84% 4.9%);
+    --background: hsl(222.2 84% 3.9%);
     --foreground: hsl(210 40% 98%);
     --card: hsl(222.2 84% 4.9%);
     --card-foreground: hsl(210 40% 98%);
@@ -75,13 +78,13 @@
     --secondary: hsl(217.2 32.6% 17.5%);
     --secondary-foreground: hsl(210 40% 98%);
     --muted: hsl(217.2 32.6% 17.5%);
-    --muted-foreground: hsl(215 20.2% 65.1%);
+    --muted-foreground: hsl(215 20.2% 75%); /* Lighter for dark mode */
     --accent: hsl(217.2 32.6% 17.5%);
     --accent-foreground: hsl(210 40% 98%);
     --destructive: hsl(0 62.8% 30.6%);
     --destructive-foreground: hsl(210 40% 98%);
-    --border: hsl(217.2 32.6% 17.5%);
-    --input: hsl(217.2 32.6% 17.5%);
+    --border: hsl(217.2 32.6% 25%); /* Increased contrast */
+    --input: hsl(217.2 32.6% 25%); /* Increased contrast */
     --ring: hsl(224.3 76.3% 48%);
   }
 }
@@ -91,6 +94,42 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans antialiased selection:bg-primary/20 selection:text-primary;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display tracking-tight font-black;
   }
 }
+
+@layer utilities {
+  .glass {
+    @apply bg-background/60 backdrop-blur-2xl border-border/40 shadow-sm;
+  }
+  .glass-card {
+    @apply bg-card/40 backdrop-blur-xl border-border/40 shadow-md;
+  }
+  .animate-bounce-subtle {
+    animation: bounce-subtle 2s infinite;
+  }
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/10 rounded-full hover:bg-muted-foreground/20 transition-colors;
+  }
+}
+
+@keyframes bounce-subtle {
+  0%, 100% {
+    transform: translateY(-5%);
+    animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+  }
+  50% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  }
+}
+

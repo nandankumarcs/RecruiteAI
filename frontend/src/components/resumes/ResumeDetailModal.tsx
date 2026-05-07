@@ -12,15 +12,18 @@ import {
   Mail,
   Phone,
   Sparkles,
-  User,
   Code,
+  MapPin,
+  Calendar,
 } from "lucide-react";
 
+import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type { CallRecord } from "@/lib/calls";
 import { useToast } from "@/context/ToastContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Dialog,
   DialogContent,
@@ -200,366 +203,279 @@ export function ResumeDetailModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl bg-card/95 backdrop-blur-xl border-border/50">
-        <DialogHeader>
-          <div className="mb-2 flex items-center gap-4">
-            <div className="rounded-xl bg-primary/10 p-3 text-primary">
-              <User className="h-6 w-6" />
-            </div>
+      <DialogContent className="max-w-6xl p-0 overflow-hidden bg-background/95 backdrop-blur-2xl border-border/40 shadow-2xl animate-in zoom-in-95 duration-200">
+        <div className="sticky top-0 z-50 flex items-center justify-between px-8 py-6 border-b border-border/40 bg-background/60 backdrop-blur-xl">
+          <div className="flex items-center gap-5">
+            <Avatar className="h-14 w-14 border-2 border-primary/20 shadow-sm">
+              <AvatarFallback className="bg-primary/10 text-primary font-black text-xl">
+                {resume.candidate_name?.split(' ').map(n => n[0]).join('').toUpperCase() || "?"}
+              </AvatarFallback>
+            </Avatar>
             <div>
-              <DialogTitle className="text-2xl font-bold">
+              <DialogTitle className="text-3xl font-black tracking-tighter">
                 {resume.candidate_name || "Unknown Candidate"}
               </DialogTitle>
-              <DialogDescription>
-                Uploaded on {new Date(resume.created_at).toLocaleDateString()}
-              </DialogDescription>
+              <div className="flex items-center gap-3 mt-1">
+                <Badge variant="secondary" className="bg-primary/10 text-primary border-primary/20 font-bold text-[10px] uppercase tracking-widest px-2">
+                  {resume.status}
+                </Badge>
+                <span className="text-xs font-bold text-muted-foreground/60 uppercase tracking-widest flex items-center gap-1.5">
+                  <Calendar className="h-3 w-3" />
+                  {new Date(resume.created_at).toLocaleDateString()}
+                </span>
+              </div>
             </div>
           </div>
-        </DialogHeader>
+          <Badge variant="outline" className="hidden sm:flex bg-background/50 border-border/40 px-3 py-1 font-bold text-[10px] uppercase tracking-tighter text-muted-foreground">
+            ID: {resume.id.slice(0, 8)}
+          </Badge>
+        </div>
 
-        <div className="grid max-h-[68vh] gap-6 overflow-y-auto py-4 pr-2">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/30 p-3 text-sm text-muted-foreground">
-              <Mail className="h-4 w-4 text-primary" />
-              {resume.email || "No email"}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 max-h-[80vh] overflow-hidden">
+          {/* Left Sidebar - Quick Info */}
+          <div className="lg:col-span-4 border-r border-border/40 bg-muted/20 p-8 space-y-10 overflow-y-auto hidden lg:block custom-scrollbar">
+            <div className="space-y-5">
+              <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/80">Contact Details</h4>
+              <div className="space-y-4">
+                <div className="group flex flex-col gap-1 rounded-xl border border-border/40 bg-background/40 p-4 transition-all hover:border-primary/40 hover:bg-background/60">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground/60 mb-1">Email Address</span>
+                  <div className="flex items-center gap-3">
+                    <Mail className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-bold truncate selection:bg-primary/20">{resume.email || "No email provided"}</span>
+                  </div>
+                </div>
+                <div className="group flex flex-col gap-1 rounded-xl border border-border/40 bg-background/40 p-4 transition-all hover:border-primary/40 hover:bg-background/60">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground/60 mb-1">Phone Number</span>
+                  <div className="flex items-center gap-3">
+                    <Phone className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-bold truncate selection:bg-primary/20">{resume.phone_number || "No phone provided"}</span>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/30 p-3 text-sm text-muted-foreground">
-              <Phone className="h-4 w-4 text-primary" />
-              {resume.phone_number || "No phone"}
-            </div>
-          </div>
 
-          {skills.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 font-semibold">
-                <Code className="h-4 w-4 text-primary" />
-                Skills
+            <div className="space-y-5">
+              <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/80">Candidate Summary</h4>
+              <div className="relative">
+                <div className="absolute -left-2 top-0 bottom-0 w-1 bg-primary/20 rounded-full" />
+                <p className="text-sm leading-relaxed text-muted-foreground font-medium pl-4 py-1">
+                  {parsedData.summary || "No executive summary extracted yet."}
+                </p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {skills.map((skill: string, i: number) => (
-                  <Badge
-                    key={i}
-                    variant="secondary"
-                    className="border-primary/10 bg-primary/5 text-primary"
-                  >
-                    {skill}
-                  </Badge>
-                ))}
-              </div>
-              {skillCategories.length > 0 && (
-                <div className="space-y-2">
-                  {skillCategories.map((category: any, i: number) => (
-                    <div key={i} className="text-sm text-muted-foreground">
-                      <span className="font-medium text-foreground">
-                        {category.category}:
-                      </span>{" "}
-                      {(category.items || []).join(", ")}
-                    </div>
+            </div>
+
+            {skills.length > 0 && (
+              <div className="space-y-5">
+                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/80">Core Expertise</h4>
+                <div className="flex flex-wrap gap-2">
+                  {skills.map((skill: string, i: number) => (
+                    <Badge
+                      key={i}
+                      variant="secondary"
+                      className="px-3 py-1 text-[10px] font-black uppercase tracking-tighter bg-primary/5 text-primary border border-primary/10 hover:bg-primary/10 transition-colors cursor-default"
+                    >
+                      {skill}
+                    </Badge>
                   ))}
                 </div>
-              )}
-            </div>
-          )}
-
-          {experience.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 font-semibold">
-                <Briefcase className="h-4 w-4 text-primary" />
-                Experience
               </div>
-              <div className="space-y-3">
-                {experience.map((exp: any, i: number) => (
-                  <div
-                    key={i}
-                    className="space-y-1 rounded-lg border border-border/50 bg-muted/20 p-3"
-                  >
-                    <div className="font-medium">
-                      {exp.role_title || exp.title || exp.role || exp}
-                    </div>
-                    <div className="flex items-center justify-between text-sm text-muted-foreground">
-                      <span>{exp.company_name || exp.company || ""}</span>
-                      <span>
-                        {exp.duration_text ||
-                          [exp.from_date || exp.start_date, exp.to_date || exp.end_date]
-                            .filter(Boolean)
-                            .join(" - ") ||
-                          exp.duration ||
-                          ""}
-                      </span>
-                    </div>
-                    {exp.location && (
-                      <div className="text-sm text-muted-foreground">
-                        {exp.location}
+            )}
+          </div>
+
+          {/* Main Content Area */}
+          <div className="lg:col-span-8 p-0 overflow-y-auto h-full scrollbar-thin">
+            <div className="p-6 space-y-10 pb-20">
+              {/* Interview Call Section (Highest Priority) */}
+              <section className="space-y-4">
+                <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-primary">
+                  <PhoneCall className="h-4 w-4" />
+                  Interview Automation
+                </div>
+                
+                <div className="relative overflow-hidden rounded-xl border border-primary/30 bg-primary/5 p-8 shadow-lg shadow-primary/5">
+                  <div className="absolute top-0 right-0 p-6 opacity-10">
+                    <Sparkles className="h-32 w-32 text-primary" />
+                  </div>
+
+                  {startedCall ? (
+                    <div className="space-y-6 relative z-10">
+                      <div className="flex items-center justify-between">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-3 font-black text-2xl tracking-tighter">
+                            <span className="relative flex h-4 w-4">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-4 w-4 bg-emerald-500"></span>
+                            </span>
+                            CALL {startedCall.status.toUpperCase()}
+                          </div>
+                          <p className="text-sm text-muted-foreground font-bold uppercase tracking-widest flex items-center gap-2">
+                            <Calendar className="size-3" />
+                            {new Date(startedCall.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                        <Button 
+                          onClick={() => { onClose(); navigate(`/calls/${startedCall.id}`); }}
+                          className="rounded-lg font-black tracking-tight h-14 px-10 shadow-xl shadow-primary/20 hover:scale-105 transition-transform"
+                        >
+                          OPEN WORKSPACE
+                        </Button>
                       </div>
-                    )}
-                    {Array.isArray(exp.tasks_performed || exp.bullets) &&
-                      (exp.tasks_performed || exp.bullets).length > 0 && (
-                        <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-                          {(exp.tasks_performed || exp.bullets).map(
-                            (bullet: string, bulletIndex: number) => (
-                              <li key={bulletIndex}>{bullet}</li>
-                            )
-                          )}
-                        </ul>
-                      )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-3 rounded-xl border border-border/50 bg-muted/20 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2 font-semibold">
-                <FileQuestion className="h-4 w-4 text-primary" />
-                Interview Questions
-              </div>
-              <Button
-                onClick={handleGenerateQuestions}
-                disabled={resume.status !== "parsed" || isGeneratingQuestions}
-                className="min-w-40"
-              >
-                {isGeneratingQuestions ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Generating
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="mr-2 h-4 w-4" />
-                    {questions.length > 0 ? "Regenerate" : "Generate Questions"}
-                  </>
-                )}
-              </Button>
-            </div>
-
-            {resume.status !== "parsed" && (
-              <div className="text-sm text-muted-foreground">
-                Questions become available after resume parsing finishes.
-              </div>
-            )}
-
-            {questionsError && (
-              <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive">
-                {questionsError}
-              </div>
-            )}
-
-            {isQuestionsLoading ? (
-              <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading saved questions...
-              </div>
-            ) : questions.length > 0 ? (
-              <div className="space-y-3">
-                {questions.map((question) => (
-                  <div
-                    key={question.id}
-                    className="rounded-lg border border-border/50 bg-background/60 p-3"
-                  >
-                    <div className="mb-2 flex flex-wrap items-center gap-2">
-                      <Badge variant="outline">
-                        {question.category || "general"}
-                      </Badge>
-                      <Badge
-                        variant="secondary"
-                        className={difficultyClasses[question.difficulty] || difficultyClasses[3]}
-                      >
-                        Difficulty {question.difficulty}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        Q{question.order_index}
-                      </span>
                     </div>
-                    <p className="text-sm leading-relaxed text-foreground">
-                      {question.question_text}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-lg border border-dashed border-border/50 bg-background/40 p-4 text-sm text-muted-foreground">
-                No questions have been generated for this resume yet.
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-3 rounded-xl border border-border/50 bg-muted/20 p-4">
-            <div className="flex items-center gap-2 font-semibold">
-              <PhoneCall className="h-4 w-4 text-primary" />
-              Interview Call
-            </div>
-
-            {startedCall ? (
-              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm">
-                <div className="font-medium text-emerald-700 dark:text-emerald-400">
-                  Call {startedCall.status}
-                </div>
-                <div className="text-muted-foreground">
-                  {startedCall.phone_number} • {new Date(startedCall.created_at).toLocaleString()}
-                </div>
-                <Button
-                  variant="link"
-                  className="mt-2 h-auto p-0 text-primary"
-                  onClick={() => {
-                    onClose();
-                    navigate(`/calls/${startedCall.id}`);
-                  }}
-                >
-                  View call details
-                </Button>
-              </div>
-            ) : (
-              <div className="text-sm text-muted-foreground">
-                Start an interview call for this parsed candidate. Questions will be generated automatically if they do not exist yet.
-              </div>
-            )}
-
-            {callError && (
-              <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive">
-                {callError}
-              </div>
-            )}
-
-            <Button
-              onClick={handleStartCall}
-              disabled={
-                resume.status !== "parsed" ||
-                !resume.phone_number ||
-                isStartingCall ||
-                startedCall?.status === "queued" ||
-                startedCall?.status === "ringing" ||
-                startedCall?.status === "in_progress"
-              }
-              className="w-full"
-            >
-              {isStartingCall ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Starting Call
-                </>
-              ) : (
-                <>
-                  <PhoneCall className="mr-2 h-4 w-4" />
-                  Start Interview Call
-                </>
-              )}
-            </Button>
-          </div>
-
-          {projects.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 font-semibold">
-                <FolderKanban className="h-4 w-4 text-primary" />
-                Projects
-              </div>
-              <div className="space-y-3">
-                {projects.map((project: any, i: number) => (
-                  <div
-                    key={i}
-                    className="space-y-2 rounded-lg border border-border/50 bg-muted/20 p-3"
-                  >
-                    <div className="font-medium">{project.name || "Project"}</div>
-                    {Array.isArray(project.technologies) &&
-                      project.technologies.length > 0 && (
-                        <div className="flex flex-wrap gap-2">
-                          {project.technologies.map(
-                            (tech: string, techIndex: number) => (
-                              <Badge key={techIndex} variant="outline">
-                                {tech}
-                              </Badge>
-                            )
+                  ) : (
+                    <div className="space-y-6 relative z-10">
+                      <div className="space-y-2">
+                        <h5 className="font-black text-2xl tracking-tighter">Launch AI Screening</h5>
+                        <p className="text-sm text-muted-foreground leading-relaxed max-w-lg font-medium">
+                          Initiate a high-fidelity voice interview. Our AI will conduct a structured screening based on the candidate's background and target role.
+                        </p>
+                      </div>
+                      <div className="flex flex-col sm:flex-row gap-4">
+                        <Button
+                          size="lg"
+                          onClick={handleStartCall}
+                          disabled={resume.status !== "parsed" || !resume.phone_number || isStartingCall}
+                          className="flex-1 rounded-xl h-14 font-black tracking-tight shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
+                        >
+                          {isStartingCall ? (
+                            <Loader2 className="mr-2 h-6 w-6 animate-spin" />
+                          ) : (
+                            <PhoneCall className="mr-2 h-6 w-6" />
                           )}
+                          START INTERVIEW CALL
+                        </Button>
+                      </div>
+                      {!resume.phone_number && (
+                        <div className="flex items-center justify-center gap-2 px-4 py-2 bg-destructive/10 rounded-lg border border-destructive/20">
+                           <span className="text-[10px] font-black text-destructive uppercase tracking-widest text-center">
+                            ⚠ Missing phone number for this candidate
+                          </span>
                         </div>
                       )}
-                    {Array.isArray(project.bullets) && project.bullets.length > 0 && (
-                      <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-                        {project.bullets.map(
-                          (bullet: string, bulletIndex: number) => (
-                            <li key={bulletIndex}>{bullet}</li>
-                          )
-                        )}
-                      </ul>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                    </div>
+                  )}
+                </div>
+              </section>
 
-          {education.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 font-semibold">
-                <GraduationCap className="h-4 w-4 text-primary" />
-                Education
-              </div>
-              <div className="space-y-3">
-                {education.map((item: any, i: number) => (
-                  <div
-                    key={i}
-                    className="space-y-1 rounded-lg border border-border/50 bg-muted/20 p-3"
+              {/* Questions Section */}
+              <section className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-muted-foreground">
+                    <FileQuestion className="h-4 w-4" />
+                    Interview Strategy
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleGenerateQuestions}
+                    disabled={resume.status !== "parsed" || isGeneratingQuestions}
+                    className="h-8 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-primary/10 hover:text-primary transition-all"
                   >
-                    <div className="font-medium">
-                      {item.institution || "Institution"}
-                    </div>
-                    <div className="text-sm text-muted-foreground">
-                      {[item.degree, item.field].filter(Boolean).join(" - ")}
-                    </div>
-                    <div className="flex items-center justify-between text-sm text-muted-foreground">
-                      <span>{item.location || ""}</span>
-                      <span>
-                        {[item.start_date, item.end_date].filter(Boolean).join(" - ")}
-                      </span>
-                    </div>
-                    {item.score && (
-                      <div className="text-sm text-muted-foreground">
-                        {item.score}
+                    {isGeneratingQuestions ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Sparkles className="h-3 w-3 mr-1" />}
+                    {questions.length > 0 ? "Regenerate" : "Generate List"}
+                  </Button>
+                </div>
+
+                {questions.length > 0 ? (
+                  <div className="grid gap-5">
+                    {questions.map((question, idx) => (
+                      <div key={question.id} className="group relative rounded-xl border border-border/40 bg-muted/5 p-6 transition-all hover:bg-background hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 active:scale-[0.99]">
+                        <div className="flex items-start gap-4">
+                          <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xs font-black">
+                            {idx + 1}
+                          </div>
+                          <div className="space-y-3 flex-1">
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest bg-background/50 border-border/60">
+                                {question.category || "general"}
+                              </Badge>
+                              <Badge className={cn("text-[9px] font-black uppercase tracking-widest shadow-sm", difficultyClasses[question.difficulty])}>
+                                LVL {question.difficulty}
+                              </Badge>
+                            </div>
+                            <p className="text-sm font-bold leading-relaxed tracking-tight text-foreground/90 group-hover:text-foreground transition-colors">
+                              {question.question_text}
+                            </p>
+                          </div>
+                        </div>
                       </div>
-                    )}
+                    ))}
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {certifications.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 font-semibold">
-                <Award className="h-4 w-4 text-primary" />
-                Certifications
-              </div>
-              <div className="space-y-2">
-                {certifications.map((cert: any, i: number) => (
-                  <div
-                    key={i}
-                    className="rounded-lg border border-border/50 bg-muted/20 p-3 text-sm text-muted-foreground"
-                  >
-                    <span className="font-medium text-foreground">{cert.name}</span>
-                    {cert.issuer ? ` - ${cert.issuer}` : ""}
-                    {cert.year ? ` (${cert.year})` : ""}
+                ) : (
+                  <div className="rounded-xl border-2 border-dashed border-border/40 p-12 text-center bg-muted/5">
+                    <div className="w-16 h-16 bg-muted/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-border/40">
+                      <FileQuestion className="h-8 w-8 text-muted-foreground/30" />
+                    </div>
+                    <p className="text-xs font-black text-muted-foreground uppercase tracking-[0.2em]">No questions generated yet</p>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
+                )}
+              </section>
 
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 font-semibold">
-              <FileText className="h-4 w-4 text-primary" />
-              Resume Content
-            </div>
-            <div className="rounded-lg border border-border/50 bg-muted/30 p-4 text-sm italic leading-relaxed text-muted-foreground">
-              {parsedData.summary ||
-                "No summary extracted. Full resume text is available in the storage layer."}
+              {/* Work History */}
+              {experience.length > 0 && (
+                <section className="space-y-4">
+                  <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-muted-foreground">
+                    <Briefcase className="h-4 w-4" />
+                    Professional History
+                  </div>
+                  <div className="space-y-8 relative before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-[2px] before:bg-gradient-to-b before:from-primary/40 before:via-border before:to-transparent">
+                    {experience.map((exp: any, i: number) => (
+                      <div key={i} className="relative pl-10 group">
+                        <div className="absolute left-0 top-1.5 h-6 w-6 rounded-full bg-background border-2 border-primary/40 flex items-center justify-center z-10 group-hover:border-primary transition-colors shadow-sm">
+                          <div className="h-2 w-2 rounded-full bg-primary" />
+                        </div>
+                        <div className="space-y-3">
+                          <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+                            <div className="space-y-1">
+                              <h5 className="font-black text-xl leading-none tracking-tighter text-foreground/90">
+                                {exp.role_title || exp.title || exp.role}
+                              </h5>
+                              <div className="flex items-center gap-2 text-sm font-bold text-primary/80">
+                                <span>{exp.company_name || exp.company}</span>
+                                {exp.location && (
+                                  <>
+                                    <span className="h-1 w-1 rounded-full bg-primary/30" />
+                                    <span className="text-xs font-medium text-muted-foreground">{exp.location}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/70 bg-muted/40 px-3 py-1 rounded-full border border-border/60">
+                              {exp.duration_text || [exp.from_date || exp.start_date, exp.to_date || exp.end_date].filter(Boolean).join(" - ")}
+                            </span>
+                          </div>
+                          {Array.isArray(exp.tasks_performed || exp.bullets) && (exp.tasks_performed || exp.bullets).length > 0 && (
+                            <ul className="space-y-3 pt-1">
+                              {(exp.tasks_performed || exp.bullets).map((bullet: string, bulletIndex: number) => (
+                                <li key={bulletIndex} className="flex gap-3 text-sm leading-relaxed text-muted-foreground font-medium">
+                                  <div className="mt-2 h-1.5 w-1.5 rounded-full bg-primary/40 flex-shrink-0" />
+                                  {bullet}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           </div>
         </div>
 
-        <DialogFooter className="border-t border-border/50 pt-4">
-          <Button onClick={onClose} className="w-full sm:w-auto">
-            Close
+        <div className="flex items-center justify-between px-8 py-4 border-t border-border/40 bg-muted/30">
+          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-muted-foreground/50">
+            <span className="h-1.5 w-1.5 rounded-full bg-primary/40 animate-pulse" />
+            LIVE ANALYSIS • V1.2.0
+          </div>
+          <Button 
+            variant="ghost" 
+            onClick={onClose}
+            className="rounded-lg font-black uppercase tracking-widest text-[10px] hover:bg-background h-10 px-6 border border-border/40"
+          >
+            DISMISS
           </Button>
-        </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );

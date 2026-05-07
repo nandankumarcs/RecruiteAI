@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { FileText, Mail, Phone, PhoneCall, Trash2, User } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,110 +41,196 @@ export function ResumeTable({
   onStartCall,
 }: ResumeTableProps) {
   const getStatusBadge = (status: string) => (
-    <Badge variant={status === "error" ? "destructive" : "secondary"} className={statusTone[status] || ""}>
+    <Badge variant={status === "error" ? "destructive" : "secondary"} className={cn("px-2 py-0.5 text-[10px] font-bold uppercase tracking-tighter", statusTone[status])}>
       {status.replace("_", " ")}
     </Badge>
   );
 
+  const getDisplayName = (resume: Resume) => {
+    if (resume.candidate_name) return resume.candidate_name;
+    const filename = resume.file_path.split("/").pop() || "Unknown Candidate";
+    return filename.replace(/\.(pdf|docx)$/i, "");
+  };
+
   if (resumes.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-border/50 bg-muted/20 py-12 text-center">
-        <FileText className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
-        <h3 className="text-lg font-semibold">No candidates yet</h3>
-        <p className="text-muted-foreground">Upload resumes to see candidate information here.</p>
+      <div className="rounded-lg border-2 border-dashed border-border/40 bg-card/20 py-16 text-center animate-in fade-in zoom-in duration-500">
+        <div className="mx-auto w-16 h-16 bg-muted/50 rounded-full flex items-center justify-center mb-4">
+          <FileText className="h-8 w-8 text-muted-foreground/40" />
+        </div>
+        <h3 className="text-xl font-bold tracking-tight">No candidates yet</h3>
+        <p className="text-muted-foreground max-w-xs mx-auto mt-2">Upload resumes to see candidate information and launch screening calls.</p>
       </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border/50 bg-card/30 shadow-sm backdrop-blur-sm">
-      <Table>
-        <TableHeader className="bg-muted/50">
-          <TableRow>
-            <TableHead className="font-semibold">Candidate</TableHead>
-            <TableHead className="font-semibold">Contact</TableHead>
-            <TableHead className="font-semibold">Status</TableHead>
-            <TableHead className="font-semibold">Call</TableHead>
-            <TableHead className="font-semibold">Uploaded</TableHead>
-            <TableHead className="text-right font-semibold">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {resumes.map((resume) => {
-            const activeCall = activeCallsByResumeId[resume.id];
-            const canStartCall = resume.status === "parsed" && !!resume.phone_number && !activeCall;
-
-            return (
-              <TableRow key={resume.id} className="transition-colors hover:bg-muted/30">
-                <TableCell>
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-lg bg-primary/10 p-2 text-primary">
-                      <User className="h-4 w-4" />
+    <div className="space-y-4">
+      {/* Mobile Card View */}
+      <div className="grid grid-cols-1 gap-4 md:hidden">
+        {resumes.map((resume) => {
+          const activeCall = activeCallsByResumeId[resume.id];
+          const canStartCall = resume.status === "parsed" && !!resume.phone_number && !activeCall;
+          
+          return (
+            <div key={resume.id} className="glass p-4 rounded-lg border border-border/50 shadow-sm space-y-4">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-lg bg-primary/10 p-2.5 text-primary shadow-sm">
+                    <User className="h-5 w-5" />
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="font-bold text-base leading-none mb-1">{getDisplayName(resume)}</span>
+                    <div className="flex items-center gap-2">
+                      {getStatusBadge(resume.status)}
+                      <span className="text-[10px] text-muted-foreground font-bold uppercase">{new Date(resume.created_at).toLocaleDateString()}</span>
                     </div>
-                    <span className="font-medium">{resume.candidate_name || "Unknown"}</span>
                   </div>
-                </TableCell>
-                <TableCell>
-                  <div className="space-y-1">
-                    {resume.email && (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Mail className="h-3 w-3" />
-                        {resume.email}
-                      </div>
-                    )}
-                    {resume.phone_number && (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Phone className="h-3 w-3" />
-                        {resume.phone_number}
-                      </div>
-                    )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                  onClick={() => onDelete(resume.id)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 py-2 border-y border-border/30">
+                {resume.email && (
+                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <Mail className="h-3.5 w-3.5 text-primary/60" />
+                    {resume.email}
                   </div>
-                </TableCell>
-                <TableCell>{getStatusBadge(resume.status)}</TableCell>
-                <TableCell>
-                  {activeCall ? (
-                    <Link to={`/calls/${activeCall.id}`} className="text-sm font-medium text-primary hover:underline">
-                      {activeCall.status.replace("_", " ")}
+                )}
+                {resume.phone_number && (
+                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <Phone className="h-3.5 w-3.5 text-primary/60" />
+                    {resume.phone_number}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <Button variant="outline" size="sm" className="flex-1 rounded-lg h-10 font-bold" onClick={() => onView(resume)}>
+                  View Details
+                </Button>
+                {activeCall ? (
+                  <Button variant="secondary" size="sm" className="flex-1 rounded-lg h-10 font-bold text-primary" asChild>
+                    <Link to={`/calls/${activeCall.id}`}>
+                      Active Call
                     </Link>
-                  ) : canStartCall ? (
-                    <Button size="sm" onClick={() => onStartCall(resume)}>
-                      <PhoneCall className="mr-2 h-4 w-4" />
-                      Call
-                    </Button>
-                  ) : (
-                    <span className="text-sm text-muted-foreground">
-                      {resume.status !== "parsed" ? "Awaiting parse" : "No phone"}
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {new Date(resume.created_at).toLocaleDateString()}
-                </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="hover:bg-primary/10 hover:text-primary"
-                      onClick={() => onView(resume)}
-                    >
-                      View
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="hover:bg-destructive/10 hover:text-destructive"
-                      onClick={() => onDelete(resume.id)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+                  </Button>
+                ) : (
+                  <Button 
+                    size="sm" 
+                    className="flex-1 rounded-lg h-10 font-bold shadow-sm shadow-primary/10" 
+                    onClick={() => onStartCall(resume)}
+                    disabled={!canStartCall}
+                  >
+                    <PhoneCall className="mr-2 h-4 w-4" />
+                    Start Call
+                  </Button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Desktop Table View */}
+      <div className="hidden md:block overflow-hidden rounded-lg border border-border/50 bg-card/30 shadow-md backdrop-blur-sm">
+        <Table>
+          <TableHeader className="bg-muted/40">
+            <TableRow className="hover:bg-transparent border-border/40">
+              <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Candidate</TableHead>
+              <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Contact</TableHead>
+              <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Status</TableHead>
+              <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Call Action</TableHead>
+              <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Uploaded</TableHead>
+              <TableHead className="text-right font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {resumes.map((resume) => {
+              const activeCall = activeCallsByResumeId[resume.id];
+              const canStartCall = resume.status === "parsed" && !!resume.phone_number && !activeCall;
+
+              return (
+                <TableRow key={resume.id} className="group transition-all duration-200 hover:bg-primary/5 border-border/30">
+                  <TableCell className="py-4">
+                    <div className="flex items-center gap-3">
+                      <div className="rounded-lg bg-primary/10 p-2.5 text-primary shadow-sm group-hover:scale-110 transition-transform">
+                        <User className="h-4 w-4" />
+                      </div>
+                      <span className="font-bold text-sm tracking-tight">{getDisplayName(resume)}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="py-4">
+                    <div className="space-y-1.5">
+                      {resume.email && (
+                        <div className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground hover:text-primary transition-colors cursor-default">
+                          <Mail className="h-3 w-3 opacity-60" />
+                          {resume.email}
+                        </div>
+                      )}
+                      {resume.phone_number && (
+                        <div className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground hover:text-primary transition-colors cursor-default">
+                          <Phone className="h-3 w-3 opacity-60" />
+                          {resume.phone_number}
+                        </div>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="py-4">{getStatusBadge(resume.status)}</TableCell>
+                  <TableCell className="py-4">
+                    {activeCall ? (
+                      <Button size="sm" variant="outline" className="h-8 rounded-lg text-[11px] font-bold text-primary border-primary/20 bg-primary/5 hover:bg-primary/10" asChild>
+                        <Link to={`/calls/${activeCall.id}`}>
+                          VIEW CALL
+                        </Link>
+                      </Button>
+                    ) : canStartCall ? (
+                      <Button size="sm" className="h-8 rounded-lg text-[11px] font-bold shadow-md shadow-primary/10" onClick={() => onStartCall(resume)}>
+                        <PhoneCall className="mr-1.5 h-3.5 w-3.5" />
+                        START CALL
+                      </Button>
+                    ) : (
+                      <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest opacity-40">
+                        {resume.status !== "parsed" ? "Awaiting parse" : "No phone"}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="py-4 text-xs font-medium text-muted-foreground opacity-80">
+                    {new Date(resume.created_at).toLocaleDateString()}
+                  </TableCell>
+                  <TableCell className="py-4 text-right">
+                    <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-300 translate-x-2 group-hover:translate-x-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 rounded-lg hover:bg-primary/10 hover:text-primary"
+                        onClick={() => onView(resume)}
+                      >
+                        <FileText className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 rounded-lg hover:bg-destructive/10 hover:text-destructive"
+                        onClick={() => onDelete(resume.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 }

@@ -13,6 +13,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/context/ToastContext";
+import { motion } from "framer-motion";
+import { Badge } from "@/components/ui/badge";
+import { TrendingUp } from "lucide-react";
 
 interface DashboardMetrics {
   total_jobs: number;
@@ -28,64 +31,79 @@ interface DashboardMetrics {
 const jobCards = [
   {
     key: "total_jobs",
-    label: "Total Jobs",
+    label: "TOTAL JOBS",
     icon: FolderKanban,
-    tint: "border-sky-500/20 bg-sky-500/5 text-sky-500",
-    helper: "Tracked roles in the pipeline",
+    tint: "text-sky-500",
+    helper: "Pipeline depth",
   },
   {
     key: "active_jobs",
-    label: "Active Jobs",
+    label: "ACTIVE ROLES",
     icon: Briefcase,
-    tint: "border-emerald-500/20 bg-emerald-500/5 text-emerald-500",
-    helper: "Open roles accepting candidates",
+    tint: "text-emerald-500",
+    helper: "Live & hiring",
   },
   {
     key: "paused_jobs",
-    label: "Paused Jobs",
+    label: "PAUSED ROLES",
     icon: CirclePause,
-    tint: "border-amber-500/20 bg-amber-500/5 text-amber-500",
-    helper: "Roles waiting on the next step",
+    tint: "text-amber-500",
+    helper: "On hold",
   },
   {
     key: "closed_jobs",
-    label: "Closed Jobs",
+    label: "CLOSED ROLES",
     icon: ShieldCheck,
-    tint: "border-fuchsia-500/20 bg-fuchsia-500/5 text-fuchsia-500",
-    helper: "Finished or no longer hiring",
+    tint: "text-slate-500",
+    helper: "Hiring complete",
   },
 ] as const;
 
 const callCards = [
   {
     key: "total_calls",
-    label: "Total Calls",
+    label: "TOTAL CALLS",
     icon: PhoneCall,
-    tint: "border-cyan-500/20 bg-cyan-500/5 text-cyan-500",
-    helper: "All interview calls launched so far",
+    tint: "text-cyan-500",
+    helper: "All time activity",
   },
   {
     key: "active_calls",
-    label: "Active Calls",
+    label: "LIVE CALLS",
     icon: Waves,
-    tint: "border-violet-500/20 bg-violet-500/5 text-violet-500",
-    helper: "Calls currently queued or in progress",
+    tint: "text-violet-500",
+    helper: "In progress",
   },
   {
     key: "completed_calls",
-    label: "Completed Calls",
+    label: "SUCCESSFUL",
     icon: ShieldCheck,
-    tint: "border-emerald-500/20 bg-emerald-500/5 text-emerald-500",
-    helper: "Finished calls with final outcomes",
+    tint: "text-emerald-500",
+    helper: "Calls finalized",
   },
   {
     key: "average_score",
-    label: "Average Score",
+    label: "AVG EVALUATION",
     icon: Sparkles,
-    tint: "border-rose-500/20 bg-rose-500/5 text-rose-500",
-    helper: "Mean AI evaluation score",
+    tint: "text-rose-500",
+    helper: "AI quality score",
   },
 ] as const;
+
+const container = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.1
+    }
+  }
+};
+
+const item = {
+  hidden: { opacity: 0, y: 20 },
+  show: { opacity: 1, y: 0 }
+};
 
 export function Dashboard() {
   const { toast } = useToast();
@@ -118,7 +136,7 @@ export function Dashboard() {
 
   const renderMetricValue = (key: keyof DashboardMetrics) => {
     if (loading) {
-      return <Skeleton className="h-9 w-16" />;
+      return <Skeleton className="h-10 w-20 rounded-lg" />;
     }
 
     if (!metrics) {
@@ -126,85 +144,99 @@ export function Dashboard() {
     }
 
     if (key === "average_score") {
-      return metrics.average_score === null ? "—" : `${metrics.average_score}/10`;
+      return metrics.average_score === null ? "—" : `${metrics.average_score.toFixed(1)}/10`;
     }
 
     return metrics[key];
   };
 
   return (
-    <div className="space-y-8">
-      <div className="space-y-2">
-        <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
-        <p className="text-muted-foreground">
-          A quick view of hiring activity, interview calls, and evaluation health in RecruiteAI.
-        </p>
-      </div>
+    <div className="space-y-10 pb-12">
 
       {error ? (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-6 text-destructive font-bold flex items-center gap-4">
+          <div className="p-2 bg-destructive/20 rounded-lg">⚠️</div>
           {error}
         </div>
       ) : null}
 
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Job Pipeline</h3>
-          <span className="text-xs text-muted-foreground">Live from the backend</span>
+      <section className="space-y-6">
+        <div className="flex items-center justify-between px-2">
+          <div className="flex items-center gap-3">
+             <h3 className="text-3xl font-black tracking-tighter">JOB PIPELINE</h3>
+             <Badge variant="secondary" className="font-bold">LIVE</Badge>
+          </div>
+          <span className="text-sm text-muted-foreground font-medium flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-emerald-500" />
+            REAL-TIME METRICS
+          </span>
         </div>
-        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
+        <motion.div 
+          variants={container}
+          initial="hidden"
+          animate="show"
+          className="grid gap-6 md:grid-cols-2 xl:grid-cols-4"
+        >
           {jobCards.map(({ key, label, icon: Icon, tint, helper }) => (
-            <Card
-              key={key}
-              className={`overflow-hidden border shadow-lg transition-all duration-300 ${tint}`}
-            >
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {label}
-                </CardTitle>
-                <div className="rounded-lg bg-background/40 p-2">
-                  <Icon className="h-4 w-4" />
+            <motion.div key={key} variants={item}>
+              <Card className="group relative overflow-hidden rounded-lg border-border/40 bg-card/40 backdrop-blur-xl p-8 shadow-md transition-all duration-500 hover:-translate-y-2 hover:bg-primary/5 active:scale-[0.98]">
+                <div className={`absolute top-0 right-0 p-6 opacity-20 group-hover:opacity-100 transition-opacity duration-500 ${tint}`}>
+                  <Icon className="h-12 w-12" />
                 </div>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold tracking-tight">
-                  {renderMetricValue(key)}
+                <div className="relative z-10 space-y-6">
+                  <div className="space-y-1">
+                    <p className="text-xs font-black tracking-widest text-muted-foreground">{label}</p>
+                    <div className="text-5xl font-black tracking-tighter">
+                      {renderMetricValue(key)}
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground font-medium flex items-center gap-2">
+                    <span className={`h-1.5 w-1.5 rounded-full ${tint.replace('text', 'bg')}`} />
+                    {helper}
+                  </p>
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">{helper}</p>
-              </CardContent>
-            </Card>
+              </Card>
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       </section>
 
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Call Activity</h3>
-          <span className="text-xs text-muted-foreground">Updated as calls complete</span>
+      <section className="space-y-6">
+        <div className="flex items-center justify-between px-2">
+           <div className="flex items-center gap-3">
+             <h3 className="text-3xl font-black tracking-tighter">CALL ACTIVITY</h3>
+             <Badge variant="secondary" className="font-bold">SYSTEM</Badge>
+          </div>
+          <span className="text-sm text-muted-foreground font-medium">UPDATED MOMENTS AGO</span>
         </div>
-        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
+        <motion.div 
+          variants={container}
+          initial="hidden"
+          animate="show"
+          className="grid gap-6 md:grid-cols-2 xl:grid-cols-4"
+        >
           {callCards.map(({ key, label, icon: Icon, tint, helper }) => (
-            <Card
-              key={key}
-              className={`overflow-hidden border shadow-lg transition-all duration-300 ${tint}`}
-            >
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {label}
-                </CardTitle>
-                <div className="rounded-lg bg-background/40 p-2">
-                  <Icon className="h-4 w-4" />
+            <motion.div key={key} variants={item}>
+              <Card className="group relative overflow-hidden rounded-lg border-border/40 bg-card/40 backdrop-blur-xl p-8 shadow-md transition-all duration-500 hover:-translate-y-2 hover:bg-primary/5 active:scale-[0.98]">
+                <div className={`absolute top-0 right-0 p-6 opacity-20 group-hover:opacity-100 transition-opacity duration-500 ${tint}`}>
+                  <Icon className="h-12 w-12" />
                 </div>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold tracking-tight">
-                  {renderMetricValue(key)}
+                <div className="relative z-10 space-y-6">
+                  <div className="space-y-1">
+                    <p className="text-xs font-black tracking-widest text-muted-foreground">{label}</p>
+                    <div className="text-5xl font-black tracking-tighter">
+                      {renderMetricValue(key)}
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground font-medium flex items-center gap-2">
+                    <span className={`h-1.5 w-1.5 rounded-full ${tint.replace('text', 'bg')}`} />
+                    {helper}
+                  </p>
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">{helper}</p>
-              </CardContent>
-            </Card>
+              </Card>
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       </section>
     </div>
   );

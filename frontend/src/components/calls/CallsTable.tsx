@@ -12,7 +12,7 @@ interface CallsTableProps {
 export function CallsTable({ calls }: CallsTableProps) {
   if (calls.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-border/50 bg-muted/20 py-12 text-center">
+      <div className="rounded-lg border border-dashed border-border/50 bg-muted/20 py-12 text-center">
         <PhoneCall className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
         <h3 className="text-lg font-semibold">No calls yet</h3>
         <p className="text-muted-foreground">Start an interview call from a parsed candidate to see history here.</p>
@@ -21,7 +21,7 @@ export function CallsTable({ calls }: CallsTableProps) {
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border/50 bg-card/30 shadow-sm backdrop-blur-sm">
+    <div className="overflow-hidden rounded-lg border border-border/50 bg-card/30 shadow-sm backdrop-blur-sm">
       <Table>
         <TableHeader className="bg-muted/50">
           <TableRow>

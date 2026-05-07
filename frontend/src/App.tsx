@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
 import { ProtectedRoute } from "@/components/layout/ProtectedRoute";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Login } from "@/pages/Login";
@@ -35,6 +36,7 @@ function LandingPage() {
 function App() {
   return (
     <BrowserRouter>
+      <Toaster position="top-right" richColors closeButton />
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<Login />} />
