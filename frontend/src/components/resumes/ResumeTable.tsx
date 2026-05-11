@@ -9,6 +9,7 @@ import type { CallRecord } from "@/lib/calls";
 
 export interface Resume {
   id: string;
+  job_id: string;
   candidate_name: string | null;
   phone_number: string | null;
   email: string | null;
@@ -16,6 +17,8 @@ export interface Resume {
   created_at: string;
   file_path: string;
   file_type: string;
+  matching_score: number | null;
+  match_explanation: string | null;
   parsed_data?: any;
 }
 
@@ -113,6 +116,29 @@ export function ResumeTable({
               </div>
 
               <div className="flex items-center gap-2 pt-2">
+                <div className="flex-1 flex flex-col gap-1">
+                  <span className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Match Score</span>
+                  <div className="flex items-center gap-2">
+                    <div className={cn(
+                      "h-1.5 flex-1 rounded-full bg-muted/50 overflow-hidden"
+                    )}>
+                      <div 
+                        className={cn(
+                          "h-full transition-all duration-1000",
+                          (resume.matching_score ?? 0) >= 80 ? "bg-emerald-500" : 
+                          (resume.matching_score ?? 0) >= 50 ? "bg-amber-500" : "bg-rose-500"
+                        )}
+                        style={{ width: `${resume.matching_score ?? 0}%` }}
+                      />
+                    </div>
+                    <span className="text-xs font-black tracking-tighter">
+                      {resume.matching_score ? `${Math.round(resume.matching_score)}%` : "N/A"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
                 <Button variant="outline" size="sm" className="flex-1 rounded-lg h-10 font-bold" onClick={() => onView(resume)}>
                   View Details
                 </Button>
@@ -146,9 +172,10 @@ export function ResumeTable({
             <TableRow className="hover:bg-transparent border-border/40">
               <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Candidate</TableHead>
               <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Contact</TableHead>
+              <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground text-center">Rank</TableHead>
               <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Status</TableHead>
               <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Call Action</TableHead>
-              <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Uploaded</TableHead>
+              <TableHead className="font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground text-right">Uploaded</TableHead>
               <TableHead className="text-right font-bold py-4 text-xs uppercase tracking-widest text-muted-foreground">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -182,6 +209,32 @@ export function ResumeTable({
                         </div>
                       )}
                     </div>
+                  </TableCell>
+                  <TableCell className="py-4 text-center">
+                    {resume.matching_score !== null ? (
+                      <div className="flex flex-col items-center gap-1 group/score relative">
+                        <Badge 
+                          variant="outline" 
+                          className={cn(
+                            "px-2.5 py-1 rounded-md font-black text-sm tracking-tight border-2 shadow-sm transition-all group-hover/score:scale-110",
+                            resume.matching_score >= 80 ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" :
+                            resume.matching_score >= 50 ? "bg-amber-500/10 text-amber-500 border-amber-500/20" :
+                            "bg-rose-500/10 text-rose-500 border-rose-500/20"
+                          )}
+                        >
+                          {Math.round(resume.matching_score)}%
+                        </Badge>
+                        {resume.match_explanation && (
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3 bg-popover text-popover-foreground text-[11px] font-medium leading-relaxed rounded-lg border border-border shadow-xl opacity-0 invisible group-hover/score:opacity-100 group-hover/score:visible transition-all z-50 backdrop-blur-md">
+                            <div className="font-black mb-1 uppercase tracking-widest text-primary/80">AI Insight</div>
+                            {resume.match_explanation}
+                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-8 border-transparent border-t-popover" />
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-[10px] font-black text-muted-foreground uppercase opacity-30 tracking-widest">Pending</span>
+                    )}
                   </TableCell>
                   <TableCell className="py-4">{getStatusBadge(resume.status)}</TableCell>
                   <TableCell className="py-4">

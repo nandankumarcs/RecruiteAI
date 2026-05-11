@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2, PhoneCall } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Plus, Trash2, GripVertical, HelpCircle, Loader2 } from "lucide-react";
+import { Plus, Trash2, GripVertical, HelpCircle, Loader2, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +25,7 @@ export function QuestionManager({ jobId }: QuestionManagerProps) {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [newQuestionText, setNewQuestionText] = useState("");
 
   const fetchQuestions = async () => {
@@ -79,6 +80,28 @@ export function QuestionManager({ jobId }: QuestionManagerProps) {
     }
   };
 
+  const handleGenerateQuestions = async () => {
+    setIsGenerating(true);
+    try {
+      const response = await api.post(`/jobs/${jobId}/questions/generate`);
+      setQuestions(response.data.questions);
+      toast({
+        variant: "success",
+        title: "Questions generated",
+        description: "AI has generated a set of questions based on your job description.",
+      });
+    } catch (error) {
+      console.error("Failed to generate questions", error);
+      toast({
+        variant: "error",
+        title: "Generation failed",
+        description: "We couldn't generate AI questions at this time.",
+      });
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const handleDeleteQuestion = async (questionId: string) => {
     try {
       await api.delete(`/jobs/${jobId}/questions/${questionId}`);
@@ -107,10 +130,22 @@ export function QuestionManager({ jobId }: QuestionManagerProps) {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between px-2">
-        <h3 className="text-3xl font-black tracking-tighter uppercase">INTERVIEW STRATEGY</h3>
-        <Badge variant="outline" className="font-black tracking-tight uppercase px-4 py-1.5 rounded-lg border-primary/20 bg-primary/10 text-primary">
-          {questions.length} QUESTIONS
-        </Badge>
+        <h3 className="text-3xl font-black tracking-tighter uppercase">INTERVIEW QUESTIONS</h3>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleGenerateQuestions}
+            disabled={isGenerating}
+            className="h-10 px-4 rounded-lg font-black tracking-tight border-primary/20 hover:bg-primary/5 text-primary"
+          >
+            {isGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+            AI GENERATE
+          </Button>
+          <Badge variant="outline" className="font-black tracking-tight uppercase px-4 py-1.5 rounded-lg border-primary/20 bg-primary/10 text-primary">
+            {questions.length} QUESTIONS
+          </Badge>
+        </div>
       </div>
 
       <Card className="border-border/40 bg-card/40 backdrop-blur-xl shadow-md rounded-lg overflow-hidden">

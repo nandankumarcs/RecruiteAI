@@ -6,6 +6,18 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 
+class CallMessageResponse(BaseModel):
+    """API response schema for a single message in a call."""
+
+    id: uuid.UUID
+    role: str
+    content: str
+    sequence_number: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CallResponse(BaseModel):
     """API response schema for a call record."""
 
@@ -28,6 +40,7 @@ class CallResponse(BaseModel):
     started_at: datetime | None
     ended_at: datetime | None
     created_at: datetime
+    messages: list[CallMessageResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -51,3 +64,9 @@ class CallEvaluationResponse(BaseModel):
     strengths: list[str]
     weaknesses: list[str]
     recommendation: str
+
+
+class CallStartRequest(BaseModel):
+    """Request body for starting a call."""
+
+    phone_number: str | None = None

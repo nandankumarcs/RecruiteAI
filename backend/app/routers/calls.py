@@ -11,6 +11,7 @@ import httpx
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.question_generator_agent import (
@@ -27,7 +28,7 @@ from app.models.job import Job
 from app.models.question import InterviewQuestion
 from app.models.resume import Resume
 from app.models.user import User
-from app.schemas.call import CallEvaluationResponse, CallResponse, CallStartResponse
+from app.schemas.call import CallEvaluationResponse, CallResponse, CallStartRequest, CallStartResponse
 from app.services.analytics import analytics_service
 from app.services.call_evaluation import auto_evaluate_call_if_ready
 
@@ -173,6 +174,7 @@ async def _check_job_questions(
 @router.post("/api/resumes/{resume_id}/calls/start", response_model=CallStartResponse, status_code=201)
 async def start_call(
     resume_id: uuid.UUID,
+    request_data: CallStartRequest | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     telephony: TelephonyService = Depends(get_telephony_service),
@@ -181,10 +183,18 @@ async def start_call(
     """Generate questions if needed, create a call record, and initiate outbound telephony."""
     resume, job = await _get_owned_resume(resume_id, db, current_user)
 
+    # Use custom phone number if provided, otherwise fallback to resume's number
+    to_number = (request_data.phone_number if request_data else None) or resume.phone_number
+
     if resume.status != "parsed":
         raise ValidationError("Calls can only be started for parsed resumes.")
-    if not resume.phone_number:
-        raise ValidationError("Resume is missing a candidate phone number.")
+    if not to_number:
+        raise ValidationError("Candidate phone number is required to start a call.")
+
+    # Update resume phone number if a new one was provided
+    if request_data and request_data.phone_number and request_data.phone_number != resume.phone_number:
+        resume.phone_number = request_data.phone_number
+        db.add(resume)
 
     active_call = await db.execute(
         select(Call.id).where(
@@ -206,7 +216,7 @@ async def start_call(
 
     outbound_urls = telephony.build_urls(resume_id=resume.id)
     outbound = telephony.start_outbound_call(
-        to_number=resume.phone_number,
+        to_number=to_number,
         answer_url=outbound_urls.answer_url,
         status_callback_url=outbound_urls.status_callback_url,
         recording_callback_url=outbound_urls.recording_callback_url,
@@ -220,7 +230,7 @@ async def start_call(
         provider_call_id=outbound.call_sid,
         twilio_call_sid=outbound.call_sid,
         status=outbound.status,
-        phone_number=resume.phone_number,
+        phone_number=to_number,
         latency_metrics=append_latency_marker(None, key="call_requested_at"),
         cost_breakdown=merge_cost_breakdown(
             None,
@@ -256,6 +266,7 @@ async def list_calls(
 
     result = await db.execute(
         select(Call)
+        .options(selectinload(Call.messages))
         .where(Call.job_id == job_id)
         .order_by(Call.created_at.desc())
     )
@@ -278,6 +289,7 @@ async def get_call(
     """Get one call record scoped to the owning user."""
     result = await db.execute(
         select(Call)
+        .options(selectinload(Call.messages))
         .join(Job, Call.job_id == Job.id)
         .where(Call.id == call_id, Job.user_id == current_user.id)
     )
@@ -379,6 +391,9 @@ async def evaluate_call(
 
     evaluation = await evaluator.evaluate_call(call=call, job=job, resume=resume)
     call.ai_evaluation = evaluation.model_dump()
+    call.evaluation_score = float(evaluation.overall_score)
+    call.evaluation_summary = evaluation.behavioral_summary
+    
     if call.status == "queued":
         call.status = "completed"
     await db.flush()

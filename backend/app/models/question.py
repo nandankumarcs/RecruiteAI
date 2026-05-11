@@ -22,11 +22,6 @@ class InterviewQuestion(Base):
     job_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
-    resume_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("resumes.id", ondelete="CASCADE"),
-        nullable=True,
-    )
 
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str | None] = mapped_column(
@@ -41,7 +36,6 @@ class InterviewQuestion(Base):
 
     # Relationships
     job = relationship("Job", back_populates="questions")
-    resume = relationship("Resume", back_populates="questions")
 
     def __repr__(self) -> str:
         return f"<InterviewQuestion [{self.category}] {self.question_text[:50]}>"

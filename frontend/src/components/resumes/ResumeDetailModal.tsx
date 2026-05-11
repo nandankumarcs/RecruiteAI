@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Briefcase,
-  PhoneCall,
-  FileQuestion,
-  Loader2,
+  FileAudio,
+  FileText,
   Mail,
   Phone,
   Sparkles,
   Calendar,
+  PhoneCall,
+  FileQuestion,
+  Loader2,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -18,6 +20,8 @@ import { useToast } from "@/context/ToastContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 import type { Resume } from "./ResumeTable";
@@ -75,11 +79,16 @@ export function ResumeDetailModal({
   const [isStartingCall, setIsStartingCall] = useState(false);
   const [callError, setCallError] = useState<string | null>(null);
   const [startedCallInternal, setStartedCallInternal] = useState<CallRecord | null>(activeCall ?? null);
+  const [editablePhoneNumber, setEditablePhoneNumber] = useState(resume?.phone_number || "");
 
   const { lastCall } = useCallWebSocket(isOpen ? (startedCallInternal?.id || activeCall?.id) : undefined, onCallUpdate);
   const startedCall = lastCall ?? startedCallInternal;
 
   useEffect(() => {
+    if (resume && isOpen) {
+      setEditablePhoneNumber(resume.phone_number || "");
+    }
+
     if (!resume || !isOpen || resume.status !== "parsed") {
       setQuestions([]);
       setQuestionsError(null);
@@ -125,7 +134,8 @@ export function ResumeDetailModal({
 
     try {
       const response = await api.post<CallStartResponse>(
-        `/resumes/${resume.id}/calls/start`
+        `/resumes/${resume.id}/calls/start`,
+        { phone_number: editablePhoneNumber }
       );
       setStartedCallInternal(response.data.call);
       onCallUpdate?.(response.data.call);
@@ -150,7 +160,7 @@ export function ResumeDetailModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-6xl p-0 overflow-hidden bg-background/95 backdrop-blur-2xl border-border/40 shadow-2xl animate-in zoom-in-95 duration-200">
+      <DialogContent className="max-w-6xl p-0 overflow-hidden bg-background/95 backdrop-blur-2xl border-border/40 shadow-2xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
         <div className="sticky top-0 z-50 flex items-center justify-between px-8 py-6 border-b border-border/40 bg-background/60 backdrop-blur-xl">
           <div className="flex items-center gap-5">
             <Avatar className="h-14 w-14 border-2 border-primary/20 shadow-sm">
@@ -178,7 +188,26 @@ export function ResumeDetailModal({
           </Badge>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 max-h-[80vh] overflow-hidden">
+        {/* Match Insights Header (New) */}
+        {resume.matching_score !== null && (
+          <div className="px-8 py-3 bg-primary/5 border-b border-primary/10 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Sparkles className="h-4 w-4 text-primary animate-pulse" />
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">AI Match Analysis</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 w-32 rounded-full bg-primary/10 overflow-hidden">
+                <div 
+                  className="h-full bg-primary transition-all duration-1000" 
+                  style={{ width: `${resume.matching_score}%` }} 
+                />
+              </div>
+              <span className="text-sm font-black text-primary">{Math.round(resume.matching_score)}%</span>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 flex-1 min-h-0 overflow-hidden">
           {/* Left Sidebar - Quick Info */}
           <div className="lg:col-span-4 border-r border-border/40 bg-muted/20 p-8 space-y-10 overflow-y-auto hidden lg:block custom-scrollbar">
             <div className="space-y-5">
@@ -227,10 +256,24 @@ export function ResumeDetailModal({
                 </div>
               </div>
             )}
+
+            {resume.match_explanation && (
+              <div className="space-y-5">
+                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/80">Match Justification</h4>
+                <div className="bg-primary/5 border border-primary/10 rounded-xl p-5 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-2 opacity-5">
+                    <Sparkles className="h-12 w-12 text-primary" />
+                  </div>
+                  <p className="text-xs leading-relaxed text-foreground/90 font-medium relative z-10">
+                    {resume.match_explanation}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Main Content Area */}
-          <div className="lg:col-span-8 p-0 overflow-y-auto h-full scrollbar-thin">
+          <div className="lg:col-span-8 p-0 overflow-y-auto h-full custom-scrollbar">
             <div className="p-6 space-y-10 pb-20">
               {/* Interview Call Section (Highest Priority) */}
               <section className="space-y-4">
@@ -272,26 +315,35 @@ export function ResumeDetailModal({
                     <div className="space-y-6 relative z-10">
                       <div className="space-y-2">
                         <h5 className="font-black text-2xl tracking-tighter">Launch AI Screening</h5>
-                        <p className="text-sm text-muted-foreground leading-relaxed max-w-lg font-medium">
-                          Initiate a high-fidelity voice interview. Our AI will conduct a structured screening based on the candidate's background and target role.
-                        </p>
+                     
                       </div>
-                      <div className="flex flex-col sm:flex-row gap-4">
-                        <Button
-                          size="lg"
-                          onClick={handleStartCall}
-                          disabled={resume.status !== "parsed" || !resume.phone_number || isStartingCall}
-                          className="flex-1 rounded-xl h-14 font-black tracking-tight shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
-                        >
-                          {isStartingCall ? (
-                            <Loader2 className="mr-2 h-6 w-6 animate-spin" />
-                          ) : (
-                            <PhoneCall className="mr-2 h-6 w-6" />
-                          )}
-                          START INTERVIEW CALL
-                        </Button>
+                      <div className="space-y-2 max-w-2xl">
+                        <Label htmlFor="phone" className="text-[10px] font-black uppercase tracking-widest text-primary/70">Candidate Phone Number</Label>
+                        <div className="flex flex-col sm:flex-row gap-3 items-stretch">
+                          <Input 
+                            id="phone"
+                            type="tel"
+                            placeholder="+1234567890"
+                            value={editablePhoneNumber}
+                            onChange={(e) => setEditablePhoneNumber(e.target.value)}
+                            className="h-14 bg-background/50 border-primary/20 font-bold focus:border-primary transition-all flex-1"
+                          />
+                          <Button
+                            size="lg"
+                            onClick={handleStartCall}
+                            disabled={resume.status !== "parsed" || !editablePhoneNumber || isStartingCall}
+                            className="rounded-xl h-14 font-black tracking-tight shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all px-8 whitespace-nowrap"
+                          >
+                            {isStartingCall ? (
+                              <Loader2 className="mr-2 h-6 w-6 animate-spin" />
+                            ) : (
+                              <PhoneCall className="mr-2 h-6 w-6" />
+                            )}
+                            START INTERVIEW CALL
+                          </Button>
+                        </div>
                       </div>
-                      {!resume.phone_number && (
+                      {!editablePhoneNumber && (
                         <div className="flex items-center justify-center gap-2 px-4 py-2 bg-destructive/10 rounded-lg border border-destructive/20">
                            <span className="text-[10px] font-black text-destructive uppercase tracking-widest text-center">
                             ⚠ Missing phone number for this candidate
@@ -307,6 +359,74 @@ export function ResumeDetailModal({
                   )}
                 </div>
               </section>
+
+              {/* AI Evaluation Insights (Phase 4) */}
+              {startedCall?.ai_evaluation && (
+                <section className="space-y-6">
+                  <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-emerald-500">
+                    <Sparkles className="h-4 w-4" />
+                    Interview Insights
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-6 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600/80">Behavioral Score</span>
+                        <span className="text-2xl font-black text-emerald-600">{(startedCall.ai_evaluation as any).behavioral_score}/10</span>
+                      </div>
+                      <p className="text-xs font-medium leading-relaxed text-emerald-900/70">
+                        {(startedCall.ai_evaluation as any).behavioral_summary}
+                      </p>
+                    </div>
+
+                    <div className="bg-primary/5 border border-primary/20 rounded-xl p-6 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-primary/80">Overall Fit</span>
+                        <span className="text-2xl font-black text-primary">{(startedCall.ai_evaluation as any).overall_score}/10</span>
+                      </div>
+                      <Badge variant="outline" className={cn(
+                        "font-black uppercase tracking-widest",
+                        (startedCall.ai_evaluation as any).recommendation === 'advance' ? "bg-emerald-500 text-white border-none" :
+                        (startedCall.ai_evaluation as any).recommendation === 'hold' ? "bg-amber-500 text-white border-none" :
+                        "bg-rose-500 text-white border-none"
+                      )}>
+                        {(startedCall.ai_evaluation as any).recommendation}
+                      </Badge>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-3">
+                      <h6 className="text-[10px] font-black uppercase tracking-widest text-emerald-600">Strengths</h6>
+                      <ul className="space-y-2">
+                        {(startedCall.ai_evaluation as any).strengths?.map((s: string, i: number) => (
+                          <li key={i} className="flex gap-2 text-xs font-medium text-muted-foreground leading-tight">
+                            <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 mt-1.5 shrink-0" />
+                            {s}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="space-y-3">
+                      <h6 className="text-[10px] font-black uppercase tracking-widest text-rose-600">Development Areas</h6>
+                      <ul className="space-y-2">
+                        {(startedCall.ai_evaluation as any).weaknesses?.map((w: string, i: number) => (
+                          <li key={i} className="flex gap-2 text-xs font-medium text-muted-foreground leading-tight">
+                            <div className="h-1.5 w-1.5 rounded-full bg-rose-500 mt-1.5 shrink-0" />
+                            {w}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-muted/30 rounded-lg border border-border/40">
+                    <p className="text-sm font-medium leading-relaxed italic text-muted-foreground">
+                      "{(startedCall.ai_evaluation as any).remarks}"
+                    </p>
+                  </div>
+                </section>
+              )}
 
               {/* Questions Section */}
               <section className="space-y-4">

@@ -133,6 +133,19 @@ class StructuredResumeData(BaseModel):
     links: list[ResumeLink] = Field(default_factory=list)
 
 
+class CandidateMatch(BaseModel):
+    """Evaluation of a candidate's match for a specific job."""
+
+    model_config = ConfigDict(extra="allow")
+
+    matching_score: float = Field(
+        description="A score from 0 to 100 representing how well the candidate matches the JD."
+    )
+    explanation: str = Field(
+        description="A 2-3 sentence explanation of why the candidate received this score."
+    )
+
+
 class ResumeParserAgent:
     """Parses uploaded resumes into structured candidate data."""
 
@@ -149,6 +162,11 @@ class ResumeParserAgent:
                 schema=StructuredResumeData,
                 run_name="resume_parser",
                 metadata={"component": "resume_parser"},
+            )
+            self._ranking_llm = build_structured_chat_model(
+                schema=CandidateMatch,
+                run_name="candidate_ranker",
+                metadata={"component": "candidate_ranker"},
             )
 
     def extract_text(self, file_path: str, file_type: str) -> str:
@@ -798,6 +816,49 @@ class ResumeParserAgent:
     async def extract_structured_data(self, raw_text: str) -> StructuredResumeData:
         """Use the LLM when available, otherwise fall back to deterministic parsing."""
         fallback = self.fallback_structured_parse(raw_text)
+        if not self._structured_llm:
+            return fallback
+
+        try:
+            # We skip the heavy LLM call if the text is exceptionally short/junk
+            if len(raw_text.strip()) < 50:
+                return fallback
+
+            result = await self._structured_llm.ainvoke(
+                f"Parse this resume into structured JSON:\n\n{raw_text[:8000]}"
+            )
+            summarize_text_model_usage(result)
+            return self.merge_structured_data(result, fallback)
+        except Exception:
+            return fallback
+
+    async def evaluate_candidate_against_jd(
+        self, resume_text: str, jd_text: str
+    ) -> CandidateMatch:
+        """Evaluate a candidate's resume against a Job Description."""
+        if not self._ranking_llm:
+            return CandidateMatch(
+                matching_score=50.0,
+                explanation="LLM ranking is disabled or unavailable.",
+            )
+
+        prompt = (
+            "You are an expert technical recruiter. Evaluate the following candidate resume against the Job Description (JD).\n"
+            "Assign a matching score from 0 to 100 based on how well their experience, skills, and education align with the requirements.\n"
+            "Provide a concise 2-3 sentence explanation for the score.\n\n"
+            f"### JOB DESCRIPTION:\n{jd_text}\n\n"
+            f"### CANDIDATE RESUME:\n{resume_text[:6000]}"
+        )
+
+        try:
+            result = await self._ranking_llm.ainvoke(prompt)
+            summarize_text_model_usage(result)
+            return result
+        except Exception:
+            return CandidateMatch(
+                matching_score=0.0,
+                explanation="An error occurred during candidate evaluation.",
+            )
         if self._structured_llm is None:
             return fallback
 

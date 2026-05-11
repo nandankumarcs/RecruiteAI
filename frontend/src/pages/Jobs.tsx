@@ -19,17 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -37,33 +27,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
 import { DeleteConfirmDialog } from "@/components/ui/DeleteConfirmDialog"
 import { Badge } from "@/components/ui/badge"
 import { Calendar, Briefcase } from "lucide-react"
-import { toast } from "sonner"
+import { JobDialog } from "@/components/jobs/JobDialog"
+import { useToast } from "@/context/ToastContext"
 
-type JobFormState = {
-  title: string
-  description: string
-  requirements: string
-  status: JobStatus
-}
-
-const initialFormState: JobFormState = {
-  title: "",
-  description: "",
-  requirements: "",
-  status: "active",
-}
-
-const statusClasses: Record<JobStatus, string> = {
-  active: "bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border-emerald-500/20",
-  paused: "bg-amber-500/15 text-amber-500 dark:text-amber-400 border-amber-500/20",
-  closed: "bg-slate-500/15 text-slate-500 dark:text-slate-400 border-slate-500/20",
-}
 
 export function Jobs() {
+  const { toast } = useToast()
   const navigate = useNavigate()
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
@@ -73,7 +45,6 @@ export function Jobs() {
   const [error, setError] = useState("")
   const [query, setQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | JobStatus>("all")
-  const [form, setForm] = useState<JobFormState>(initialFormState)
   const [jobToDelete, setJobToDelete] = useState<Job | null>(null)
 
   const fetchJobs = async () => {
@@ -107,60 +78,11 @@ export function Jobs() {
   }, [jobs, query, statusFilter])
 
   const openCreateDialog = () => {
-    setForm(initialFormState)
-    setEditingJob(null)
-    setError("")
     setIsCreateDialogOpen(true)
   }
 
   const openEditDialog = (job: Job) => {
-    setForm({
-      title: job.title,
-      description: job.description,
-      requirements: job.requirements ?? "",
-      status: job.status,
-    })
     setEditingJob(job)
-    setError("")
-  }
-
-  const closeDialogs = () => {
-    setIsCreateDialogOpen(false)
-    setEditingJob(null)
-    setSubmitting(false)
-    setForm(initialFormState)
-  }
-
-  const handleFormChange = <K extends keyof JobFormState>(key: K, value: JobFormState[K]) => {
-    setForm((current) => ({ ...current, [key]: value }))
-  }
-
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    try {
-      setSubmitting(true)
-      setError("")
-
-      const payload = {
-        title: form.title,
-        description: form.description,
-        requirements: form.requirements || null,
-        status: form.status,
-      }
-
-      if (editingJob) {
-        await api.put(`/jobs/${editingJob.id}`, payload)
-      } else {
-        await api.post("/jobs", payload)
-      }
-
-      closeDialogs()
-      await fetchJobs()
-    } catch (error) {
-      console.error("Failed to save job", error)
-      setError("Could not save the job. Please try again.")
-      setSubmitting(false)
-    }
   }
 
   const handleDelete = async () => {
@@ -169,12 +91,20 @@ export function Jobs() {
     try {
       setSubmitting(true)
       await api.delete(`/jobs/${jobToDelete.id}`)
-      toast.success("Job deleted successfully")
+      toast({
+        variant: "success",
+        title: "Job deleted",
+        description: "The job posting has been removed.",
+      })
       setJobToDelete(null)
       await fetchJobs()
     } catch (error) {
       console.error("Failed to delete job", error)
-      toast.error("Could not delete the selected job.")
+      toast({
+        variant: "error",
+        title: "Delete failed",
+        description: "Could not delete the selected job.",
+      })
     } finally {
       setSubmitting(false)
     }
@@ -215,32 +145,17 @@ export function Jobs() {
             </SelectContent>
           </Select>
 
-          <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-          <DialogTrigger asChild>
-              <Button className="rounded-lg shadow-sm shadow-primary/10" onClick={openCreateDialog}>
-              <Plus className="mr-2 h-4 w-4" /> Create Job
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[500px] bg-card/95 backdrop-blur-xl border-border/50">
-            <DialogHeader>
-              <DialogTitle className="text-2xl font-bold">Create Job</DialogTitle>
-              <DialogDescription>
-                Post a new position to start receiving and screening resumes.
-              </DialogDescription>
-            </DialogHeader>
-            <JobForm
-              form={form}
-              error={error}
-              submitting={submitting}
-              submitLabel="Create Job"
-              onChange={handleFormChange}
-              onSubmit={handleSubmit}
-              onCancel={closeDialogs}
-            />
-          </DialogContent>
-        </Dialog>
+          <Button className="rounded-lg shadow-sm shadow-primary/10" onClick={openCreateDialog}>
+            <Plus className="mr-2 h-4 w-4" /> Create Job
+          </Button>
         </div>
       </div>
+
+      <JobDialog
+        isOpen={isCreateDialogOpen}
+        onClose={() => setIsCreateDialogOpen(false)}
+        onSuccess={fetchJobs}
+      />
 
       {error && !isCreateDialogOpen && !editingJob ? (
         <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -301,7 +216,11 @@ export function Jobs() {
                   <TableCell className="py-6">
                     <Badge
                       variant="outline"
-                      className={`font-black tracking-tight uppercase px-3 py-1 rounded-lg shadow-sm ${statusClasses[job.status]}`}
+                      className={`font-black tracking-tight uppercase px-3 py-1 rounded-lg shadow-sm ${
+                        job.status === "active" ? "bg-emerald-500/15 text-emerald-500 border-emerald-500/20" :
+                        job.status === "paused" ? "bg-amber-500/15 text-amber-500 border-amber-500/20" :
+                        "bg-slate-500/15 text-slate-500 border-slate-500/20"
+                      }`}
                     >
                       {job.status}
                     </Badge>
@@ -382,7 +301,11 @@ export function Jobs() {
                 </div>
                 <Badge
                   variant="outline"
-                  className={`font-black tracking-tight uppercase px-3 py-1 rounded-lg shadow-sm ${statusClasses[job.status]}`}
+                  className={`font-black tracking-tight uppercase px-3 py-1 rounded-lg shadow-sm ${
+                    job.status === "active" ? "bg-emerald-500/15 text-emerald-500 border-emerald-500/20" :
+                    job.status === "paused" ? "bg-amber-500/15 text-amber-500 border-amber-500/20" :
+                    "bg-slate-500/15 text-slate-500 border-slate-500/20"
+                  }`}
                 >
                   {job.status}
                 </Badge>
@@ -438,121 +361,13 @@ export function Jobs() {
         description={`Are you sure you want to delete "${jobToDelete?.title}"? All associated resumes and interview data will be permanently removed.`}
       />
 
-      <Dialog open={editingJob !== null} onOpenChange={(open) => !open && closeDialogs()}>
-        <DialogContent className="sm:max-w-[500px] border-border/50 bg-card/95 backdrop-blur-xl">
-          <DialogHeader>
-            <DialogTitle className="text-2xl font-bold">Edit Job</DialogTitle>
-            <DialogDescription>
-              Update the role details and current job status.
-            </DialogDescription>
-          </DialogHeader>
-          <JobForm
-            form={form}
-            error={error}
-            submitting={submitting}
-            submitLabel="Save Changes"
-            onChange={handleFormChange}
-            onSubmit={handleSubmit}
-            onCancel={closeDialogs}
-            showStatus
-          />
-        </DialogContent>
-      </Dialog>
+      <JobDialog
+        job={editingJob}
+        isOpen={editingJob !== null}
+        onClose={() => setEditingJob(null)}
+        onSuccess={fetchJobs}
+      />
     </div>
   )
 }
 
-type JobFormProps = {
-  form: JobFormState
-  error: string
-  submitting: boolean
-  submitLabel: string
-  onChange: <K extends keyof JobFormState>(key: K, value: JobFormState[K]) => void
-  onSubmit: (event: React.FormEvent<HTMLFormElement>) => Promise<void>
-  onCancel: () => void
-  showStatus?: boolean
-}
-
-function JobForm({
-  form,
-  error,
-  submitting,
-  submitLabel,
-  onChange,
-  onSubmit,
-  onCancel,
-  showStatus = true,
-}: JobFormProps) {
-  return (
-    <form onSubmit={(event) => void onSubmit(event)}>
-      <div className="grid gap-6 py-4">
-        <div className="space-y-2">
-          <Label htmlFor="title" className="text-sm font-semibold">
-            Job Title
-          </Label>
-          <Input
-            id="title"
-            placeholder="e.g. Senior Frontend Engineer"
-            value={form.title}
-            onChange={(event) => onChange("title", event.target.value)}
-            required
-            className="bg-background/50"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="description" className="text-sm font-semibold">
-            Description
-          </Label>
-          <Textarea
-            id="description"
-            placeholder="Role overview, team context, and success expectations..."
-            value={form.description}
-            onChange={(event) => onChange("description", event.target.value)}
-            required
-            className="bg-background/50"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="requirements" className="text-sm font-semibold">
-            Requirements
-          </Label>
-          <Textarea
-            id="requirements"
-            placeholder="Core skills, years of experience, and must-haves..."
-            value={form.requirements}
-            onChange={(event) => onChange("requirements", event.target.value)}
-            className="bg-background/50"
-          />
-        </div>
-        {showStatus ? (
-          <div className="space-y-2">
-            <Label className="text-sm font-semibold">Status</Label>
-            <Select value={form.status} onValueChange={(value: JobStatus) => onChange("status", value)}>
-              <SelectTrigger className="w-full bg-background/50">
-                <SelectValue placeholder="Select status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="paused">Paused</SelectItem>
-                <SelectItem value="closed">Closed</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        ) : null}
-        {error ? (
-          <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-            {error}
-          </div>
-        ) : null}
-      </div>
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={onCancel} disabled={submitting}>
-          Cancel
-        </Button>
-        <Button type="submit" className="px-8" disabled={submitting}>
-          {submitting ? "Saving..." : submitLabel}
-        </Button>
-      </DialogFooter>
-    </form>
-  )
-}

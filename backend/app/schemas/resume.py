@@ -17,6 +17,8 @@ class ResumeBaseResponse(BaseModel):
     file_path: str
     file_type: str
     status: str
+    matching_score: float | None = None
+    match_explanation: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

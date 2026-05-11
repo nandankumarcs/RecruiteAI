@@ -22,7 +22,8 @@ from app.models.job import Job
 from app.models.question import InterviewQuestion
 from app.models.user import User
 from app.schemas.job import JobCreate, JobResponse, JobUpdate
-from app.schemas.question import InterviewQuestionCreate, InterviewQuestionResponse, InterviewQuestionUpdate
+from app.schemas.question import InterviewQuestionCreate, InterviewQuestionResponse, InterviewQuestionUpdate, GeneratedQuestionSetResponse
+from app.agents.question_generator_agent import QuestionGeneratorAgent, get_question_generator_agent
 
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -235,4 +236,49 @@ async def delete_job_question(
 
     await db.delete(question)
     await db.flush()
+
+
+@router.post("/{job_id}/questions/generate", response_model=GeneratedQuestionSetResponse, status_code=201)
+async def generate_job_questions(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    generator: QuestionGeneratorAgent = Depends(get_question_generator_agent),
+):
+    """AI-generate interview questions for a job based on its JD."""
+    result = await db.execute(
+        select(Job).where(Job.id == job_id, Job.user_id == current_user.id)
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        raise NotFoundError(resource="Job")
+
+    generated = await generator.generate_questions(job)
+    if not generated.questions:
+        raise ValidationError("No questions could be generated for this job description.")
+
+    # Clear existing questions for a fresh start
+    from sqlalchemy import delete
+    await db.execute(delete(InterviewQuestion).where(InterviewQuestion.job_id == job.id))
+
+    stored_questions: list[InterviewQuestion] = []
+    for item in generated.questions:
+        question = InterviewQuestion(
+            job_id=job.id,
+            question_text=item.question_text,
+            category=item.category,
+            difficulty=item.difficulty,
+            order_index=item.order_index,
+        )
+        db.add(question)
+        stored_questions.append(question)
+
+    await db.flush()
+    for question in stored_questions:
+        await db.refresh(question)
+
+    return GeneratedQuestionSetResponse(
+        schema_version=generated.schema_version,
+        questions=stored_questions,
+    )
 

@@ -30,6 +30,7 @@ interface DashboardMetrics {
   average_cost_per_call_usd: number | null;
   realtime_calls: number;
   pipeline_calls: number;
+  average_latency_ms: number | null;
 }
 
 const jobCards = [

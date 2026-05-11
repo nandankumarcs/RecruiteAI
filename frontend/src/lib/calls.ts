@@ -35,6 +35,13 @@ export interface CallRecord {
   started_at: string | null;
   ended_at: string | null;
   created_at: string;
+  messages?: Array<{
+    id: string;
+    role: string;
+    content: string;
+    sequence_number: number;
+    created_at: string;
+  }>;
 }
 
 export const ACTIVE_CALL_STATUSES: CallStatus[] = [

@@ -41,7 +41,7 @@ class QuestionGenerationResult(BaseModel):
 
 
 class QuestionGeneratorAgent:
-    """Generate tailored interview questions for one job + resume pair."""
+    """Generate interview questions for a job, optionally tailored to a resume."""
 
     def __init__(self, enable_llm: bool | None = None):
         self.enable_llm = (
@@ -97,16 +97,25 @@ class QuestionGeneratorAgent:
         projects = parsed_data.get("projects") or []
         return [project for project in projects if isinstance(project, dict)]
 
-    def fallback_generate(self, job: Job, resume: Resume) -> QuestionGenerationResult:
+    def fallback_generate(self, job: Job, resume: Resume | None = None) -> QuestionGenerationResult:
         """Deterministic question generation for tests and local usage."""
-        skills = self._resume_skills(resume)
-        projects = self._resume_projects(resume)
-        candidate_name = resume.candidate_name or "the candidate"
-        summary = (resume.parsed_data or {}).get("summary") or "their background"
-        top_skill = skills[0] if skills else "your core technical strengths"
-        second_skill = skills[1] if len(skills) > 1 else top_skill
-        project_name = projects[0]["name"] if projects else "a recent project"
-        project_stack = ", ".join(projects[0].get("technologies", [])[:3]) if projects else ""
+        if resume:
+            skills = self._resume_skills(resume)
+            projects = self._resume_projects(resume)
+            summary = (resume.parsed_data or {}).get("summary") or "their background"
+            top_skill = skills[0] if skills else "your core technical strengths"
+            second_skill = skills[1] if len(skills) > 1 else top_skill
+            project_name = projects[0]["name"] if projects else "a recent project"
+            project_stack = ", ".join(projects[0].get("technologies", [])[:3]) if projects else ""
+        else:
+            skills = []
+            projects = []
+            summary = "the candidate's background"
+            top_skill = "core technical skills"
+            second_skill = "relevant domain expertise"
+            project_name = "prior professional experience"
+            project_stack = ""
+
         requirements = job.requirements or job.description
 
         questions = [
@@ -116,63 +125,65 @@ class QuestionGeneratorAgent:
                 difficulty=1,
             ),
             GeneratedQuestion(
-                question_text=f"Your resume highlights {summary}. Which part of that experience best prepares you for this role?",
+                question_text=f"How does your previous experience prepare you for the specific challenges of a {job.title} at our company?",
                 category="experience",
                 difficulty=2,
             ),
             GeneratedQuestion(
-                question_text=f"This role requires {requirements}. How have you applied {top_skill} in real work or project settings?",
+                question_text=f"This role requires {requirements}. Can you walk me through a specific instance where you applied {top_skill} effectively?",
                 category="technical",
                 difficulty=3,
             ),
             GeneratedQuestion(
-                question_text=f"What were the hardest engineering trade-offs you handled while working with {second_skill}?",
+                question_text=f"What is the most complex technical trade-off you've had to make when working with {second_skill}?",
                 category="technical",
                 difficulty=4,
             ),
             GeneratedQuestion(
-                question_text=f"Walk me through {project_name}{f' and the technical stack around {project_stack}' if project_stack else ''}. What problem were you solving and what did you personally own?",
-                category="project",
-                difficulty=3,
-            ),
-            GeneratedQuestion(
-                question_text=f"Tell me about a time in one of your internships or projects where something did not work as expected. How did you debug it and what changed afterward?",
+                question_text=f"Tell me about a time when you had to take ownership of a critical project. What was the outcome?",
                 category="behavioral",
                 difficulty=3,
             ),
             GeneratedQuestion(
-                question_text=f"If you joined as our {job.title}, how would you approach the first 30 days of understanding the product, codebase, and hiring expectations?",
+                question_text=f"If you were to encounter a major technical roadblock in your first month as our {job.title}, how would you approach solving it?",
                 category="situational",
-                difficulty=2,
+                difficulty=3,
             ),
             GeneratedQuestion(
-                question_text=f"What are the areas you most want to deepen next, and how does this role help you get there?",
+                question_text=f"What are your long-term career goals, and how does this role specifically align with them?",
                 category="closing",
-                difficulty=1,
+                difficulty=2,
             ),
         ]
 
         return self.normalize_result(QuestionGenerationResult(questions=questions))
 
-    async def generate_questions(self, job: Job, resume: Resume) -> QuestionGenerationResult:
+    async def generate_questions(self, job: Job, resume: Resume | None = None) -> QuestionGenerationResult:
         fallback = self.fallback_generate(job, resume)
         if self._structured_llm is None:
             return fallback
 
-        parsed_data = resume.parsed_data or {}
+        if resume:
+            parsed_data = resume.parsed_data or {}
+            candidate_context = (
+                f"Candidate name: {resume.candidate_name or ''}\n"
+                f"Candidate summary: {parsed_data.get('summary', '')}\n"
+                f"Candidate skills: {', '.join(parsed_data.get('skills', []))}\n"
+                f"Candidate experience: {parsed_data.get('experience', [])}\n"
+                f"Candidate projects: {parsed_data.get('projects', [])}\n"
+            )
+        else:
+            candidate_context = "No specific candidate provided. Generate generic but high-quality questions for this role."
+
         prompt = (
             "Generate 8 to 12 tailored interview questions for a recruiter-led phone screening. "
             "Use categories such as introduction, experience, technical, project, behavioral, situational, and closing. "
             "Return structured JSON with question_text, category, difficulty (1-5), and order_index. "
-            "Questions should be concise, specific to the candidate and role, and cover a good spread of categories.\n\n"
+            "Questions should be concise and cover a good spread of categories.\n\n"
             f"Job title: {job.title}\n"
             f"Job description: {job.description}\n"
             f"Job requirements: {job.requirements or ''}\n"
-            f"Candidate name: {resume.candidate_name or ''}\n"
-            f"Candidate summary: {parsed_data.get('summary', '')}\n"
-            f"Candidate skills: {', '.join(parsed_data.get('skills', []))}\n"
-            f"Candidate experience: {parsed_data.get('experience', [])}\n"
-            f"Candidate projects: {parsed_data.get('projects', [])}\n"
+            f"{candidate_context}\n"
         )
 
         try:
@@ -184,7 +195,7 @@ class QuestionGeneratorAgent:
                     agent_name="question_generator",
                     model=settings.OPENAI_TEXT_MODEL or settings.OPENAI_MODEL,
                     usage=getattr(raw, "usage_metadata", None),
-                    metadata={"job_title": job.title, "resume_id": str(resume.id)},
+                    metadata={"job_title": job.title, "resume_id": str(resume.id) if resume else None},
                 )
             if parsed is None:
                 return fallback

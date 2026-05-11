@@ -30,6 +30,10 @@ class Resume(Base):
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     parsed_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # parsed_data schema: {skills:[], experience:[], education:[], summary:str}
+    
+    matching_score: Mapped[float | None] = mapped_column(nullable=True)
+    match_explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     status: Mapped[str] = mapped_column(
         String(50), default="uploaded"  # uploaded, parsing, parsed, error
     )
@@ -40,9 +44,6 @@ class Resume(Base):
     # Relationships
     job = relationship("Job", back_populates="resumes")
     calls = relationship("Call", back_populates="resume", cascade="all, delete-orphan")
-    questions = relationship(
-        "InterviewQuestion", back_populates="resume", cascade="all, delete-orphan"
-    )
 
     def __repr__(self) -> str:
         return f"<Resume {self.candidate_name or 'Unknown'} ({self.file_type})>"

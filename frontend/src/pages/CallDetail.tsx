@@ -58,6 +58,7 @@ interface TranscriptLine {
   id: string;
   speaker: string;
   text: string;
+  timestamp?: string;
 }
 
 interface CallAnalytics {
@@ -316,10 +317,17 @@ export function CallDetail() {
     }
   };
 
-  const transcriptLines = useMemo(
-    () => parseTranscript(call?.transcript ?? null),
-    [call?.transcript]
-  );
+  const transcriptLines = useMemo(() => {
+    if (call?.messages && call.messages.length > 0) {
+      return [...call.messages].sort((a, b) => a.sequence_number - b.sequence_number).map((m) => ({
+        id: m.id,
+        speaker: m.role === "assistant" ? "Assistant" : "Candidate",
+        text: m.content,
+        timestamp: m.created_at,
+      }));
+    }
+    return parseTranscript(call?.transcript ?? null);
+  }, [call?.transcript, call?.messages]);
 
   if (loading) {
     return (
@@ -488,25 +496,40 @@ export function CallDetail() {
             </CardHeader>
             <CardContent>
               {transcriptLines.length > 0 ? (
-                <div className="space-y-3">
-                  {transcriptLines.map((line) => {
-                    const isAssistant = /^ai|assistant$/i.test(line.speaker);
-                    return (
-                      <div
-                        key={line.id}
-                        className={`rounded-xl border p-4 text-sm leading-7 ${
-                          isAssistant
-                            ? "border-primary/20 bg-primary/5"
-                            : "border-border/50 bg-background/60"
-                        }`}
-                      >
-                        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                          {line.speaker}
+                <div className="relative group">
+                  {/* Fading Edge Effects */}
+                  <div className="absolute top-0 left-0 right-0 h-10 bg-gradient-to-b from-card to-transparent z-10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-card to-transparent z-10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" />
+                  
+                  <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar py-2">
+                    {transcriptLines.map((line) => {
+                      const isAssistant = /^ai|assistant$/i.test(line.speaker);
+                      return (
+                        <div
+                          key={line.id}
+                          className={`rounded-xl border p-4 text-sm leading-7 ${
+                            isAssistant
+                              ? "border-primary/20 bg-primary/5"
+                              : "border-border/50 bg-background/60"
+                          }`}
+                        >
+                          <div className="mb-1 flex items-center justify-between">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                              {line.speaker}
+                            </span>
+                            {line.timestamp && (
+                              <span className="text-[10px] font-medium text-muted-foreground/60 tabular-nums">
+                                {new Date(line.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-foreground">{line.text}</div>
                         </div>
-                        <div className="text-foreground">{line.text}</div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
+
+                  <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-card to-transparent z-10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" />
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-6 text-sm text-muted-foreground">
@@ -582,7 +605,7 @@ export function CallDetail() {
                     </Pie>
                     <Tooltip 
                       contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
-                      formatter={(value: number) => [`$${value.toFixed(6)}`, 'Cost']}
+                      formatter={(value: any) => [`$${Number(value).toFixed(6)}`, 'Cost']}
                     />
                     <Legend verticalAlign="bottom" height={36} />
                   </PieChart>
@@ -660,7 +683,7 @@ export function CallDetail() {
                           <Tooltip
                             contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
                             labelFormatter={(label) => new Date(label).toLocaleTimeString()}
-                            formatter={(value: number) => [`$${value.toFixed(6)}`, 'Cost']}
+                            formatter={(value: any) => [`$${Number(value).toFixed(6)}`, 'Cost']}
                           />
                           <Bar dataKey="cost_usd" fill="#82ca9d" radius={[4, 4, 0, 0]} />
                         </BarChart>

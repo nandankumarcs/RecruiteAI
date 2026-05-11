@@ -25,6 +25,7 @@ class Job(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     requirements: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evaluation_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(50), default="active"  # active, paused, closed
     )

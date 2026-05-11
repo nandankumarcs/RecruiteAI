@@ -37,6 +37,10 @@ class Call(Base):
     recording_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     recording_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+    evaluation_score: Mapped[float | None] = mapped_column(nullable=True)
+    evaluation_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
     ai_evaluation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     cost_breakdown: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     latency_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)

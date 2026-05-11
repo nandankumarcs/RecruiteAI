@@ -63,7 +63,7 @@ async def upload_resumes(
     parser: ResumeParserAgent = Depends(get_resume_parser_agent),
 ):
     """Upload one or more resumes for a job and parse them immediately."""
-    await _get_owned_job(job_id, db, current_user)
+    job = await _get_owned_job(job_id, db, current_user)
 
     if not files:
         raise ValidationError("At least one resume file is required")
@@ -89,6 +89,19 @@ async def upload_resumes(
             }
             status = "error"
 
+        # Evaluate candidate against JD if parsing was successful
+        matching_score = None
+        match_explanation = None
+        if status == "parsed" and parsed.get("raw_text") and job.description:
+            try:
+                evaluation = await parser.evaluate_candidate_against_jd(
+                    parsed["raw_text"], job.description
+                )
+                matching_score = evaluation.matching_score
+                match_explanation = evaluation.explanation
+            except Exception:
+                pass
+
         resume = Resume(
             job_id=job_id,
             candidate_name=parsed["candidate_name"],
@@ -98,6 +111,8 @@ async def upload_resumes(
             file_type=file_type,
             raw_text=parsed["raw_text"],
             parsed_data=parsed["parsed_data"],
+            matching_score=matching_score,
+            match_explanation=match_explanation,
             status=status,
         )
         db.add(resume)
@@ -122,7 +137,7 @@ async def list_resumes(
     result = await db.execute(
         select(Resume)
         .where(Resume.job_id == job_id)
-        .order_by(Resume.created_at.desc())
+        .order_by(Resume.matching_score.desc().nullslast(), Resume.created_at.desc())
     )
     return result.scalars().all()
 

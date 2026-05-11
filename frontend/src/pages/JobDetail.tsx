@@ -15,28 +15,23 @@ import { CallsTable } from "@/components/calls/CallsTable";
 import { CallProgressIndicator } from "@/components/calls/CallProgressIndicator";
 import { QuestionManager } from "@/components/jobs/QuestionManager";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { JobDialog } from "@/components/jobs/JobDialog";
+import type { Job } from "@/lib/jobs";
 
 import { useToast } from "@/context/ToastContext";
 import { motion, AnimatePresence } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
+import { Markdown } from "@/components/ui/Markdown";
 
-interface Job {
-  id: string;
-  title: string;
-  description: string;
-  requirements: string | null;
-  status: string;
-  created_at: string;
-}
 
 type DetailTab = "resumes" | "calls" | "strategy" | "details";
 
 const tabs: Array<{ key: DetailTab; label: string }> = [
 
-  { key: "resumes", label: "Resumes" },
-  { key: "calls", label: "Calls" },
-  { key: "strategy", label: "Strategy" },
-  { key: "details", label: "Details" },
+  { key: "resumes", label: "Candidates" },
+  { key: "calls", label: "Call History" },
+  { key: "strategy", label: "Questions" },
+  { key: "details", label: "Job Info" },
 ];
 
 
@@ -52,6 +47,7 @@ export function JobDetail() {
   const [viewingResume, setViewingResume] = useState<Resume | null>(null);
   const [resumeToDelete, setResumeToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
   const fetchJobData = useCallback(async () => {
     if (!jobId) return;
@@ -194,11 +190,19 @@ export function JobDetail() {
           <Button 
             variant="outline" 
             className="h-14 px-8 rounded-lg font-black tracking-tight border-primary/20 hover:bg-primary/5 shadow-md transition-all active:scale-95"
+            onClick={() => setIsEditDialogOpen(true)}
           >
             EDIT JOB
           </Button>
         </div>
       </div>
+
+      <JobDialog
+        job={job}
+        isOpen={isEditDialogOpen}
+        onClose={() => setIsEditDialogOpen(false)}
+        onSuccess={(updatedJob) => setJob(updatedJob)}
+      />
 
       <div className="flex flex-wrap gap-2 p-1 bg-muted/30 backdrop-blur-xl border border-border/40 rounded-lg w-fit">
         {tabs.map((tab) => (
@@ -280,9 +284,8 @@ export function JobDetail() {
               )}
 
               {activeTab === "details" && (
-
                 <div className="space-y-6">
-                   <div className="px-2">
+                  <div className="px-2">
                     <h3 className="text-3xl font-black tracking-tighter">JOB INFORMATION</h3>
                   </div>
                   <Card className="border-border/40 bg-card/40 backdrop-blur-xl shadow-md rounded-lg overflow-hidden">
@@ -292,16 +295,15 @@ export function JobDetail() {
                     <CardContent className="space-y-8 p-8">
                       <div className="space-y-3">
                         <h4 className="text-sm font-black tracking-widest text-primary uppercase">Description</h4>
-                        <p className="whitespace-pre-wrap leading-relaxed text-lg font-medium text-foreground">
-                          {job.description}
-                        </p>
+                        <Markdown content={job.description} />
                       </div>
                       <div className="space-y-3 pt-4 border-t border-border/40">
                         <h4 className="text-sm font-black tracking-widest text-primary uppercase">Requirements</h4>
                         <div className="bg-background/40 p-6 rounded-lg border border-border/40">
-                          <p className="whitespace-pre-wrap font-medium text-muted-foreground leading-relaxed">
-                            {job.requirements || "No specific requirements provided."}
-                          </p>
+                          <Markdown 
+                            content={job.requirements || "No specific requirements provided."} 
+                            className="text-muted-foreground"
+                          />
                         </div>
                       </div>
                     </CardContent>

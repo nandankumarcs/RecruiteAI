@@ -24,7 +24,6 @@ class InterviewQuestionResponse(InterviewQuestionBase):
 
     id: uuid.UUID
     job_id: uuid.UUID
-    resume_id: uuid.UUID | None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
