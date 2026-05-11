@@ -54,10 +54,10 @@ def test_realtime_bridge_instructions_include_grounding_rules():
         state=ConversationState(),
     )
 
-    assert "Never invent candidate experience" in instructions
-    assert "Do not answer on the candidate's behalf" in instructions
+    assert "Warm, professional recruiter" in instructions
+    assert "No consent = No interview questions." in instructions
     assert "Tell me about your RAG experience." in instructions
-    assert "Consent has not been granted yet" in instructions
+    assert "Ask for consent to continue the screening." in instructions
 
 
 def test_realtime_bridge_instructions_shift_after_consent_and_end_request():
@@ -96,8 +96,8 @@ def test_realtime_bridge_instructions_shift_after_consent_and_end_request():
         state=ConversationState(consent_granted=True, termination_requested=True),
     )
 
-    assert "Consent granted. Continue the interview." in consented
-    assert "Your only next response should be a brief thank-you and goodbye." in ending
+    assert "Consent granted. Ask exactly ONE interview question" in consented
+    assert "Candidate declined/ended. Say thank you and goodbye." in ending
 
 
 def test_realtime_bridge_detects_end_of_call_script():
@@ -109,26 +109,41 @@ def test_realtime_bridge_detects_end_of_call_script():
     )
 
 
-def test_consent_and_off_topic_helpers():
-    assert RealtimeBridge._is_affirmative_consent("Yes, go ahead.")
-    assert RealtimeBridge._is_negative_or_decline("No thanks, not now.")
-    assert RealtimeBridge._is_end_intent("Can you disconnect the call?")
-    assert RealtimeBridge._is_clarification_request("What is this again?")
-    assert RealtimeBridge._is_off_topic_request("Write a poem for me, please.")
+@pytest.mark.asyncio
+async def test_candidate_turn_analysis_uses_contextual_classification():
+    class FakeCreate:
+        def __init__(self, payload: str):
+            self.payload = payload
+
+        async def create(self, **kwargs):
+            message = type("Message", (), {"content": self.payload})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice]})()
+
+    class FakeChat:
+        def __init__(self, payload: str):
+            self.completions = FakeCreate(payload)
+
+    class FakeClient:
+        def __init__(self, payload: str):
+            self.chat = FakeChat(payload)
+
+    bridge = RealtimeBridge()
+    bridge._analysis_client = FakeClient(
+        '{"grant_consent": true, "request_termination": false, "off_topic_request": false}'
+    )
+
+    analysis = await bridge._analyze_candidate_turn(
+        transcript="Yes, that works for me.",
+        state=ConversationState(consent_prompt_delivered=True),
+    )
+
+    assert analysis.grant_consent is True
+    assert analysis.request_termination is False
+    assert analysis.off_topic_request is False
     assert RealtimeBridge._is_consent_prompt(
         "Hello, this is a recruiter screening call for the role. Is now a good time, and do you consent to continue?"
     )
-
-
-def test_consent_is_not_granted_before_prompt_delivery():
-    state = ConversationState()
-
-    early_yes = RealtimeBridge._is_affirmative_consent("Yes, sir.")
-    assert early_yes is True
-    assert state.consent_prompt_delivered is False
-    should_grant = state.consent_prompt_delivered and early_yes
-
-    assert should_grant is False
 
 
 def test_incomplete_assistant_fragment_detection():

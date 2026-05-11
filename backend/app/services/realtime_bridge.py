@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 import websockets
 from fastapi import WebSocket
+from openai import AsyncOpenAI
 from sqlalchemy import select
 
 from app.config import get_settings
@@ -39,6 +40,13 @@ class ConversationState:
     consent_prompt_delivered: bool = False
 
 
+@dataclass
+class CandidateTurnAnalysis:
+    grant_consent: bool = False
+    request_termination: bool = False
+    off_topic_request: bool = False
+
+
 class RealtimeBridge:
     """Bridge Twilio media streams to the OpenAI Realtime API."""
 
@@ -47,6 +55,8 @@ class RealtimeBridge:
         self.voice = settings.OPENAI_REALTIME_VOICE
         self.api_key = settings.OPENAI_API_KEY
         self.transcription_model = settings.OPENAI_TRANSCRIPTION_MODEL
+        self.text_model = settings.OPENAI_TEXT_MODEL or settings.OPENAI_MODEL
+        self._analysis_client = AsyncOpenAI(api_key=self.api_key) if self.api_key else None
         self.telephony = get_telephony_service()
         self._last_message_keys: dict[uuid.UUID, tuple[str, str]] = {}
 
@@ -67,7 +77,7 @@ class RealtimeBridge:
             resume, job = row
             questions_result = await session.execute(
                 select(InterviewQuestion)
-                .where(InterviewQuestion.resume_id == resume_id)
+                .where(InterviewQuestion.job_id == job.id)
                 .order_by(InterviewQuestion.order_index.asc())
             )
             call_result = await session.execute(
@@ -100,57 +110,39 @@ class RealtimeBridge:
 
         phase_rules = []
         if state.termination_requested:
-            phase_rules.append(
-                "The candidate has asked to end the call or declined to continue. "
-                "Your only next response should be a brief thank-you and goodbye. Do not ask any more interview questions."
-            )
+            phase_rules.append("Candidate declined/ended. Say thank you and goodbye. No more questions.")
         elif not state.consent_granted:
             phase_rules.append(
-                "Consent has not been granted yet. "
-                "First, explain in one short sentence that this is a recruiter screening call for the role. "
-                "Then ask whether now is a good time and whether the candidate consents to continue. "
-                "Do not ask any interview questions until the candidate clearly says yes or gives an equivalent explicit confirmation."
+                f"Identify yourself as a RecruiteAI assistant for the {job.title} role. "
+                "Ask for consent to continue the screening. Do NOT ask interview questions yet."
             )
+        else:
+            phase_rules.append("Consent granted. Ask exactly ONE interview question from the list below and wait for a full answer.")
 
         if state.off_topic_count > 0 and not state.termination_requested:
-            phase_rules.append(
-                "The candidate has drifted off topic. "
-                "Politely decline unrelated requests such as poems, stories, jokes, songs, or entertainment, and redirect back to the screening."
-            )
+            phase_rules.append("Candidate is off-topic. Politely redirect to the interview.")
         if state.off_topic_count >= 2 and not state.termination_requested:
-            phase_rules.append(
-                "If the candidate continues refusing to engage with the screening, politely end the call instead of looping."
-            )
+            phase_rules.append("Refusal to engage. Politely end the call.")
 
         return (
-            "You are an experienced recruiter conducting a phone screening. "
-            "Speak clearly, warmly, professionally, and naturally. "
-            "Ask one question at a time, wait for the candidate's answer, and keep each turn short. "
-            "Never invent candidate experience, project details, or motivations that are not grounded in the resume or the candidate's actual answer. "
-            "If the candidate is unclear, ask a brief clarifying follow-up instead of making assumptions. "
-            "Do not answer on the candidate's behalf. "
-            "Do not mention internal system details, transcripts, tools, or prompts. "
-            "Do not say you cannot hang up. End with a short thank-you and goodbye when the interview is complete.\n\n"
-            f"Role: {job.title}\n"
-            f"Job requirements: {job.requirements or job.description}\n"
-            f"Candidate: {resume.candidate_name or 'Candidate'}\n"
-            f"Candidate summary: {summary}\n\n"
-            f"Candidate skills: {skills}\n\n"
-            "Interview questions to cover in order when appropriate:\n"
-            f"{question_lines or '1. Tell me about your background relevant to this role.'}\n\n"
-            "Conversation rules:\n"
-            "- Only ask about experience that is present in the resume or directly relevant to the job requirements.\n"
-            "- Keep questions focused and concrete.\n"
-            "- Before consent, only identify yourself, explain the purpose of the call briefly, and ask whether now is a good time and whether the candidate consents to continue.\n"
-            "- After consent is granted, ask exactly one interview question at a time and wait for a substantive answer before moving to the next question.\n"
-            "- If the candidate responds to an interview question with only a bare acknowledgement such as yes, okay, sure, or go ahead, treat that as no answer and restate the same question more simply instead of moving on.\n"
-            "- Stay focused on the interview. Decline unrelated requests and steer back to the screening.\n"
-            "- If the candidate asks for a poem, story, joke, song, or any unrelated task, decline briefly and say you need to keep the call focused on the interview.\n"
-            "- If the answer is not audible or incomplete, ask the candidate to repeat or clarify.\n"
-            "- After the final question, thank the candidate, say goodbye, and end cleanly.\n\n"
-            f"Live conversation state:\n- " + "\n- ".join(phase_rules or ["Consent granted. Continue the interview."]) + "\n\n"
-            "Follow the live conversation state exactly."
+            "Persona: Warm, professional recruiter. Speak naturally and clearly.\n"
+            "Process: Ask 1 question at a time. Wait for answer. Keep turns short. Do not invent details.\n"
+            f"Role: {job.title} | Req: {job.requirements or job.description[:200]}\n"
+            f"Candidate: {resume.candidate_name or 'Candidate'} | Skills: {skills}\n"
+            f"Summary: {summary}\n\n"
+            "Questions:\n"
+            f"{question_lines or '1. Tell me about your background.'}\n\n"
+            "Critical Rules:\n"
+            "- No consent = No interview questions.\n"
+            "- If answer is too short (yes/ok), ask for details/restate question.\n"
+            "- If the candidate asks a clarifying or meta question, answer it briefly and then restate the current interview question.\n"
+            "- Treat clarification, confusion, or requests to repeat as continued engagement, not refusal or completion.\n"
+            "- Decline non-interview requests (poems/stories/jokes) once, then hang up if they persist.\n"
+            "- Do not end the call unless the candidate clearly refuses, asks to stop, or all interview questions are complete.\n"
+            "- After final question, say goodbye and end.\n\n"
+            "Current State:\n- " + "\n- ".join(phase_rules)
         )
+
 
     @staticmethod
     def _clean_message_text(content: str | None) -> str:
@@ -171,88 +163,60 @@ class RealtimeBridge:
     def _normalize_text(content: str) -> str:
         return " ".join(content.lower().strip().split())
 
-    @classmethod
-    def _is_affirmative_consent(cls, content: str) -> bool:
-        text = cls._normalize_text(content)
-        if not text:
-            return False
-        phrases = [
-            "yes",
-            "yeah",
-            "yep",
-            "sure",
-            "okay",
-            "ok",
-            "go ahead",
-            "let's do it",
-            "lets do it",
-            "continue",
-            "i consent",
-            "you can start",
-            "now is a good time",
-        ]
-        return any(phrase in text for phrase in phrases)
+    async def _analyze_candidate_turn(
+        self,
+        *,
+        transcript: str,
+        state: ConversationState,
+    ) -> CandidateTurnAnalysis:
+        cleaned = self._clean_message_text(transcript)
+        if not cleaned or self._analysis_client is None:
+            return CandidateTurnAnalysis()
 
-    @classmethod
-    def _is_negative_or_decline(cls, content: str) -> bool:
-        text = cls._normalize_text(content)
-        phrases = [
-            "no",
-            "not now",
-            "not interested",
-            "busy",
-            "call later",
-            "another time",
-            "i don't want",
-            "do not continue",
-            "don't continue",
-            "no thanks",
-        ]
-        return any(phrase in text for phrase in phrases)
-
-    @classmethod
-    def _is_end_intent(cls, content: str) -> bool:
-        text = cls._normalize_text(content)
-        phrases = [
-            "disconnect",
-            "end the call",
-            "hang up",
-            "stop the call",
-            "i'm not interested",
-            "im not interested",
-            "we'll disconnect",
-            "we will disconnect",
-            "bye",
-            "goodbye",
-        ]
-        return any(phrase in text for phrase in phrases)
-
-    @classmethod
-    def _is_clarification_request(cls, content: str) -> bool:
-        text = cls._normalize_text(content)
-        phrases = [
-            "what is this",
-            "who is this",
-            "can you tell me a bit",
-            "what is this again",
-            "i did not understand",
-            "what role",
-            "which role",
-        ]
-        return any(phrase in text for phrase in phrases)
-
-    @classmethod
-    def _is_off_topic_request(cls, content: str) -> bool:
-        text = cls._normalize_text(content)
-        phrases = [
-            "write a poem",
-            "tell me a story",
-            "tell the story",
-            "tell me a joke",
-            "sing a song",
-            "write a song",
-        ]
-        return any(phrase in text for phrase in phrases)
+        try:
+            completion = await self._analysis_client.chat.completions.create(
+                model=self.text_model,
+                temperature=0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You classify the latest candidate utterance in a phone screening. "
+                            "Return strict JSON with boolean keys: "
+                            "grant_consent, request_termination, off_topic_request. "
+                            "Be conservative. Clarification, confusion, requests to repeat, silence checks, "
+                            "or short answers are continued engagement, not refusal. "
+                            "Only set grant_consent=true if the candidate clearly agrees to continue the screening "
+                            "after being asked for consent. "
+                            "Only set request_termination=true if the candidate clearly refuses, asks to stop, "
+                            "asks to disconnect, or says they are not interested in continuing. "
+                            "Only set off_topic_request=true for clearly unrelated entertainment or side-task requests."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "candidate_utterance": cleaned,
+                                "consent_prompt_delivered": state.consent_prompt_delivered,
+                                "consent_already_granted": state.consent_granted,
+                                "termination_already_requested": state.termination_requested,
+                                "off_topic_count": state.off_topic_count,
+                            }
+                        ),
+                    },
+                ],
+            )
+            payload = json.loads((completion.choices[0].message.content or "{}").strip() or "{}")
+            return CandidateTurnAnalysis(
+                grant_consent=bool(payload.get("grant_consent")),
+                request_termination=bool(payload.get("request_termination")),
+                off_topic_request=bool(payload.get("off_topic_request")),
+            )
+        except Exception:
+            logger.exception("Failed to analyze candidate turn; defaulting to neutral interpretation.")
+            return CandidateTurnAnalysis()
 
     @classmethod
     def _looks_like_incomplete_assistant_fragment(cls, content: str) -> bool:
@@ -499,6 +463,8 @@ class RealtimeBridge:
         await auto_evaluate_call_if_ready(call_id)
 
     async def handle(self, websocket: WebSocket, resume_id: uuid.UUID, provider: str = "twilio") -> None:
+        import sys
+        print("=== OPENAI HANDLE CALLED ===", file=sys.stderr, flush=True)
         if not self.api_key:
             await websocket.accept()
             await websocket.close(code=1011, reason="OpenAI API key is not configured.")
@@ -519,220 +485,313 @@ class RealtimeBridge:
         first_assistant_audio_sent = False
         first_user_transcript_seen = False
 
+        # --- Coalescing buffers ---
+        assistant_text_buffer: str = ""
+        current_response_id: str | None = None
+
         realtime_url = f"wss://api.openai.com/v1/realtime?model={self.model}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "OpenAI-Beta": "realtime=v1",
+        }
 
-        async with websockets.connect(realtime_url, additional_headers=headers) as openai_ws:
-            await self._update_session_instructions(
-                openai_ws,
-                resume=resume,
-                job=job,
-                questions=questions,
-                state=state,
-            )
+        logger.info("=== [0] Connecting to OpenAI Realtime (call=%s) ===", call_id)
 
-            async def forward_openai_to_twilio() -> None:
-                nonlocal assistant_cancel_requested, assistant_response_active, should_hang_up, stream_id
-                nonlocal first_assistant_audio_sent, first_user_transcript_seen
-                try:
-                    async for message in openai_ws:
-                        data = json.loads(message)
-                        event_type = data.get("type")
+        try:
+            async with websockets.connect(realtime_url, additional_headers=headers) as openai_ws:
+                logger.info("=== [1] OpenAI Realtime CONNECTED (call=%s) ===", call_id)
+                await self._update_session_instructions(
+                    openai_ws,
+                    resume=resume,
+                    job=job,
+                    questions=questions,
+                    state=state,
+                )
 
-                        if event_type in {"response.created", "response.output_audio.delta"}:
-                            assistant_response_active = True
-                        if event_type == "response.output_audio.delta" and stream_id:
-                            delta = data.get("delta")
-                            if delta:
-                                if call_id and not first_assistant_audio_sent:
-                                    first_assistant_audio_sent = True
+                async def forward_openai_to_twilio() -> None:
+                    nonlocal assistant_cancel_requested, assistant_response_active, should_hang_up, stream_id
+                    nonlocal first_assistant_audio_sent, first_user_transcript_seen
+                    nonlocal assistant_text_buffer, current_response_id
+                    try:
+                        async for message in openai_ws:
+                            data = json.loads(message)
+                            event_type = data.get("type")
+
+                            # --- Audio Deltas ---
+                            if event_type in {"response.created", "response.output_audio.delta"}:
+                                assistant_response_active = True
+                                if event_type == "response.created":
+                                    current_response_id = data.get("response", {}).get("id")
+                                    assistant_text_buffer = ""
+
+                            if event_type == "response.output_audio.delta" and stream_id:
+                                delta = data.get("delta")
+                                if delta:
+                                    if call_id and not first_assistant_audio_sent:
+                                        first_assistant_audio_sent = True
+                                        async with async_session_factory() as session:
+                                            call_record = await session.get(Call, call_id)
+                                            if call_record is not None:
+                                                call_record.latency_metrics = append_latency_marker(
+                                                    call_record.latency_metrics,
+                                                    key="first_assistant_audio_at",
+                                                )
+                                                await session.commit()
+                                    await websocket.send_json(
+                                        self._build_audio_event(
+                                            provider=provider,
+                                            stream_id=stream_id,
+                                            payload=delta,
+                                        )
+                                    )
+
+                            # --- Transcript Deltas (Coalescing) ---
+                            elif event_type in {"response.audio_transcript.delta", "response.output_audio_transcript.delta"}:
+                                delta = data.get("delta") or ""
+                                assistant_text_buffer += delta
+
+                            # --- User Interruption (Barge-in) ---
+                            elif event_type == "input_audio_buffer.speech_started" and stream_id:
+                                logger.info("User started speaking (call=%s), cancelling assistant output.", call_id)
+                                await websocket.send_json(
+                                    self._build_clear_audio_event(provider=provider, stream_id=stream_id)
+                                )
+                                if assistant_response_active:
+                                    assistant_cancel_requested = True
+                                    await openai_ws.send(json.dumps({"type": "response.cancel"}))
+                                    assistant_text_buffer = "" # Clear buffer on interruption
+
+                            # --- User Transcript Finalized ---
+                            elif (
+                                event_type.endswith("input_audio_transcription.completed")
+                                and call_id
+                            ):
+                                transcript = self._extract_transcript_text(data)
+                                if not transcript:
+                                    continue
+
+                                logger.info("User transcript completed (call=%s): %s", call_id, transcript)
+                                item_key = self._extract_item_id(data) or f"user-{event_type}-{uuid.uuid4()}"
+                                await self._append_message(
+                                    call_id, "user", transcript, item_key=item_key
+                                )
+                                if not first_user_transcript_seen:
+                                    first_user_transcript_seen = True
                                     async with async_session_factory() as session:
                                         call_record = await session.get(Call, call_id)
                                         if call_record is not None:
                                             call_record.latency_metrics = append_latency_marker(
                                                 call_record.latency_metrics,
-                                                key="first_assistant_audio_at",
+                                                key="first_user_transcript_at",
                                             )
                                             await session.commit()
-                                await websocket.send_json(
-                                    self._build_audio_event(
-                                        provider=provider,
-                                        stream_id=stream_id,
-                                        payload=delta,
-                                    )
+
+                                analysis = await self._analyze_candidate_turn(
+                                    transcript=transcript,
+                                    state=state,
                                 )
-                        elif event_type == "input_audio_buffer.speech_started" and stream_id:
-                            await websocket.send_json(
-                                self._build_clear_audio_event(provider=provider, stream_id=stream_id)
-                            )
-                            if assistant_response_active:
-                                assistant_cancel_requested = True
-                                await openai_ws.send(json.dumps({"type": "response.cancel"}))
-                        elif (
-                            event_type.endswith("input_audio_transcription.completed")
-                            and call_id
-                        ):
-                            transcript = self._extract_transcript_text(data)
-                            item_key = self._extract_item_id(data) or f"user-{event_type}"
-                            await self._append_message(
-                                call_id, "user", transcript, item_key=item_key
-                            )
-                            if not first_user_transcript_seen:
-                                first_user_transcript_seen = True
+
+                                state_changed = False
+                                if analysis.request_termination:
+                                    if not state.termination_requested:
+                                        logger.info("Termination requested by candidate (call=%s)", call_id)
+                                        state.termination_requested = True
+                                        state_changed = True
+                                elif analysis.grant_consent and not state.consent_granted:
+                                    logger.info("Consent granted by candidate (call=%s)", call_id)
+                                    state.consent_granted = True
+                                    state_changed = True
+
+                                if analysis.off_topic_request:
+                                    state.off_topic_count += 1
+                                    logger.warning("Off-topic count increased (call=%s, count=%s)", call_id, state.off_topic_count)
+                                    state_changed = True
+
+                                if state.termination_requested:
+                                    await self._close_call_with_message(
+                                        call_id=call_id,
+                                        provider_call_id=provider_call_id,
+                                        message="Understood. Thank you for your time today. Goodbye.",
+                                    )
+                                    stop_event.set()
+                                    continue
+
+                                if state.off_topic_count >= 2:
+                                    await self._close_call_with_message(
+                                        call_id=call_id,
+                                        provider_call_id=provider_call_id,
+                                        message="It sounds like now is not the right time for this screening. Thank you for your time. Goodbye.",
+                                    )
+                                    stop_event.set()
+                                    continue
+
+                                if state_changed:
+                                    await self._update_session_instructions(
+                                        openai_ws,
+                                        resume=resume,
+                                        job=job,
+                                        questions=questions,
+                                        state=state,
+                                    )
+
+                            # --- Assistant Response Finalized (Coalescing Flush) ---
+                            elif event_type == "response.done" and call_id:
+                                assistant_response_active = False
+                                assistant_cancel_requested = False
+                                
+                                response_data = data.get("response", {})
+                                status = response_data.get("status")
+                                
+                                if status == "cancelled":
+                                    logger.info("Assistant response cancelled (call=%s)", call_id)
+                                    assistant_text_buffer = ""
+                                    continue
+
+                                # Get finalized transcript if available in response.done, otherwise use buffer
+                                final_transcript = ""
+                                for item in response_data.get("output", []):
+                                    if item.get("type") == "message":
+                                        for content in item.get("content", []):
+                                            if content.get("type") == "audio":
+                                                final_transcript += content.get("transcript", "")
+                                            elif content.get("type") == "text":
+                                                final_transcript += content.get("text", "")
+                                
+                                transcript = (final_transcript or assistant_text_buffer).strip()
+                                
+                                if transcript:
+                                    logger.info("Assistant turn completed (call=%s): %s", call_id, transcript)
+                                    item_key = current_response_id or f"assistant-resp-{uuid.uuid4()}"
+                                    
+                                    if not state.consent_granted and self._is_consent_prompt(transcript):
+                                        state.consent_prompt_delivered = True
+                                        
+                                    await self._append_message(
+                                        call_id, "assistant", transcript, item_key=item_key
+                                    )
+                                    
+                                    if state.termination_requested or (
+                                        state.off_topic_count >= 2 and self._should_end_call(transcript)
+                                    ):
+                                        should_hang_up = True
+                                    elif self._should_end_call(transcript):
+                                        should_hang_up = True
+
+                                assistant_text_buffer = "" # Clear for next response
+                                
+                                if should_hang_up:
+                                    logger.info("Hanging up call after assistant closing (call=%s)", call_id)
+                                    if provider_call_id:
+                                        await asyncio.to_thread(self.telephony.end_call, provider_call_id)
+                                    stop_event.set()
+
+                            elif event_type == "error":
+                                error_data = data.get("error", {})
+                                error_code = error_data.get("code")
+                                error_msg = error_data.get("message")
+                                if error_code == "response_cancel_not_active":
+                                    continue
+                                logger.error("OpenAI Realtime error (call=%s): %s (%s)", call_id, error_msg, error_code)
+                                if call_id:
+                                    await self._append_message(
+                                        call_id,
+                                        "assistant",
+                                        "I ran into a technical issue during the interview. Thank you for your time today.",
+                                    )
+                                stop_event.set()
+                        
+                        logger.info("OpenAI receive loop ended (call=%s)", call_id)
+                    except Exception as e:
+                        logger.exception("Exception in forward_openai_to_twilio (call=%s): %s", call_id, e)
+                    finally:
+                        stop_event.set()
+
+                openai_task = asyncio.create_task(forward_openai_to_twilio())
+
+                try:
+                    while not stop_event.is_set():
+                        try:
+                            # Use wait_for to allow checking stop_event periodically if needed, 
+                            # though receive_text is usually fine.
+                            payload = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            # Heartbeat check/Keepalive logic could go here if needed for Twilio
+                            continue
+                        except Exception as e:
+                            logger.info("Twilio/Client websocket closed (call=%s): %s", call_id, e)
+                            break
+                        
+                        data = json.loads(payload)
+                        event = data.get("event")
+
+                        if event == "start":
+                            start = data.get("start", {})
+                            stream_id = self._extract_stream_id(data)
+                            provider_call_id = self._extract_provider_call_id(
+                                provider=provider,
+                                payload=data,
+                            ) or provider_call_id
+                            logger.info("Stream START received (call=%s, stream=%s)", call_id, stream_id)
+                            
+                            if call_id:
+                                await self._update_call_started(
+                                    call_id,
+                                    provider,
+                                    provider_call_id,
+                                )
                                 async with async_session_factory() as session:
                                     call_record = await session.get(Call, call_id)
                                     if call_record is not None:
                                         call_record.latency_metrics = append_latency_marker(
-                                            call_record.latency_metrics,
-                                            key="first_user_transcript_at",
+                                            call_record.latency_metrics, key="stream_connected_at"
                                         )
                                         await session.commit()
-                            state_changed = False
-                            if self._is_end_intent(transcript) or self._is_negative_or_decline(transcript):
-                                if not state.termination_requested:
-                                    state.termination_requested = True
-                                    state_changed = True
-                            elif not state.consent_granted:
-                                if (
-                                    state.consent_prompt_delivered
-                                    and self._is_affirmative_consent(transcript)
-                                ):
-                                    state.consent_granted = True
-                                    state_changed = True
-                                elif self._is_clarification_request(transcript):
-                                    state_changed = False
-                            if self._is_off_topic_request(transcript):
-                                state.off_topic_count += 1
-                                state_changed = True
-
-                            if state.termination_requested:
-                                await self._close_call_with_message(
-                                    call_id=call_id,
-                                    provider_call_id=provider_call_id,
-                                    message="Understood. Thank you for your time today. Goodbye.",
+                            if not initial_prompt_sent:
+                                await openai_ws.send(json.dumps({"type": "response.create"}))
+                                initial_prompt_sent = True
+                        elif event == "media":
+                            media = data.get("media", {})
+                            audio_payload = media.get("payload")
+                            if audio_payload:
+                                await openai_ws.send(
+                                    json.dumps(
+                                        {
+                                            "type": "input_audio_buffer.append",
+                                            "audio": audio_payload,
+                                        }
+                                    )
                                 )
-                                stop_event.set()
-                                continue
-                            if state.off_topic_count >= 2:
-                                await self._close_call_with_message(
-                                    call_id=call_id,
-                                    provider_call_id=provider_call_id,
-                                    message="It sounds like now is not the right time for this screening. Thank you for your time. Goodbye.",
-                                )
-                                stop_event.set()
-                                continue
-
-                            if state_changed:
-                                await self._update_session_instructions(
-                                    openai_ws,
-                                    resume=resume,
-                                    job=job,
-                                    questions=questions,
-                                    state=state,
-                                )
-                        elif event_type in {
-                            "response.output_audio_transcript.done",
-                            "response.audio_transcript.done",
-                        } and call_id:
-                            transcript = self._extract_transcript_text(data)
-                            item_key = self._extract_item_id(data) or f"assistant-{event_type}"
-                            if (
-                                assistant_cancel_requested
-                                and self._looks_like_incomplete_assistant_fragment(transcript)
-                            ):
-                                continue
-                            if not state.consent_granted and self._is_consent_prompt(transcript):
-                                state.consent_prompt_delivered = True
-                            await self._append_message(
-                                call_id, "assistant", transcript, item_key=item_key
-                            )
-                            if state.termination_requested or (
-                                state.off_topic_count >= 2 and self._should_end_call(transcript)
-                            ):
-                                should_hang_up = True
-                            elif self._should_end_call(self._clean_message_text(transcript)):
-                                should_hang_up = True
-                        elif event_type == "response.done" and call_id and should_hang_up:
-                            assistant_response_active = False
-                            assistant_cancel_requested = False
-                            if provider_call_id:
-                                await asyncio.to_thread(self.telephony.end_call, provider_call_id)
-                            stop_event.set()
-                        elif event_type == "response.done":
-                            assistant_response_active = False
-                            assistant_cancel_requested = False
-                        elif event_type == "error" and call_id:
-                            error_code = data.get("error", {}).get("code")
-                            if error_code == "response_cancel_not_active":
-                                logger.warning(
-                                    "Ignoring non-fatal Realtime cancel error: %s",
-                                    json.dumps(data),
-                                )
-                                continue
-                            logger.error("OpenAI Realtime error event: %s", json.dumps(data))
-                            await self._append_message(
-                                call_id,
-                                "assistant",
-                                "I ran into a technical issue during the interview. Thank you for your time today.",
-                            )
-                            stop_event.set()
+                        elif event == "stop":
+                            logger.info("Stream STOP received (call=%s)", call_id)
+                            break
                 finally:
                     stop_event.set()
-
-            openai_task = asyncio.create_task(forward_openai_to_twilio())
-
-            try:
-                while not stop_event.is_set():
+                    if not openai_task.done():
+                        openai_task.cancel()
+                        try:
+                            await openai_task
+                        except asyncio.CancelledError:
+                            pass
+                    
+                    if call_id:
+                        await self._update_call_finished(call_id)
+                    
                     try:
-                        payload = await websocket.receive_text()
+                        await websocket.close()
                     except Exception:
-                        break
-                    data = json.loads(payload)
-                    event = data.get("event")
+                        pass
+                    
+                    logger.info("=== [X] Bridge lifecycle ended (call=%s) ===", call_id)
 
-                    if event == "start":
-                        start = data.get("start", {})
-                        stream_id = self._extract_stream_id(data)
-                        provider_call_id = self._extract_provider_call_id(
-                            provider=provider,
-                            payload=data,
-                        ) or provider_call_id
-                        if call_id:
-                            await self._update_call_started(
-                                call_id,
-                                provider,
-                                provider_call_id,
-                            )
-                            async with async_session_factory() as session:
-                                call_record = await session.get(Call, call_id)
-                                if call_record is not None:
-                                    call_record.latency_metrics = append_latency_marker(
-                                        call_record.latency_metrics, key="stream_connected_at"
-                                    )
-                                    await session.commit()
-                        if not initial_prompt_sent:
-                            await openai_ws.send(json.dumps({"type": "response.create"}))
-                            initial_prompt_sent = True
-                    elif event == "media":
-                        media = data.get("media", {})
-                        audio_payload = media.get("payload")
-                        if audio_payload:
-                            await openai_ws.send(
-                                json.dumps(
-                                    {
-                                        "type": "input_audio_buffer.append",
-                                        "audio": audio_payload,
-                                    }
-                                )
-                            )
-                    elif event == "stop":
-                        break
-            finally:
-                stop_event.set()
-                openai_task.cancel()
-                if call_id:
-                    await self._update_call_finished(call_id)
-                await websocket.close()
+        except Exception as e:
+            logger.exception("Failed to establish or maintain OpenAI Realtime connection (call=%s): %s", call_id, e)
+            if call_id:
+                await self._mark_call_status(call_id, "failed")
+            try:
+                await websocket.close(code=1011, reason="Upstream AI connection failed")
+            except Exception:
+                pass
+
 
     @staticmethod
     def _extract_stream_id(payload: dict) -> str | None:
@@ -740,15 +799,6 @@ class RealtimeBridge:
 
     @staticmethod
     def _build_audio_event(*, provider: str, stream_id: str, payload: str) -> dict:
-        if provider == "plivo":
-            return {
-                "event": "playAudio",
-                "media": {
-                    "contentType": "audio/x-mulaw",
-                    "sampleRate": "8000",
-                    "payload": payload,
-                },
-            }
         return {
             "event": "media",
             "streamSid": stream_id,
@@ -757,14 +807,10 @@ class RealtimeBridge:
 
     @staticmethod
     def _build_clear_audio_event(*, provider: str, stream_id: str) -> dict:
-        if provider == "plivo":
-            return {"event": "clearAudio", "streamId": stream_id}
         return {"event": "clear", "streamSid": stream_id}
 
     @staticmethod
     def _extract_provider_call_id(*, provider: str, payload: dict) -> str | None:
-        if provider == "plivo":
-            return payload.get("start", {}).get("callId")
         return payload.get("start", {}).get("callSid")
 
 

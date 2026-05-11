@@ -11,7 +11,27 @@ import {
   Sparkles,
   Timer,
   UserRound,
+  PieChart as PieChartIcon,
+  BarChart as BarChartIcon,
+  Activity,
+  ExternalLink,
 } from "lucide-react";
+
+import {
+  PieChart,
+  Pie,
+  Cell,
+  ResponsiveContainer,
+  Tooltip,
+  Legend,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+} from "recharts";
+
+
 
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -40,7 +60,29 @@ interface TranscriptLine {
   text: string;
 }
 
+interface CallAnalytics {
+  turns: Array<{
+    start_time: string;
+    end_time: string;
+    latency_ms: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    cost_usd: number;
+    name: string;
+    run_url: string | null;
+  }>;
+
+  summary: {
+    total_latency_ms: number;
+    total_tokens: number;
+    total_cost_usd: number;
+    turn_count: number;
+  };
+}
+
 type CallDetailData = CallRecord;
+
 
 const scoreItems = [
   { key: "technical_score", label: "Technical" },
@@ -66,6 +108,64 @@ function parseTranscript(transcript: string | null): TranscriptLine[] {
     .filter((line) => line.text.length > 0);
 }
 
+// ---- Latency helpers ----
+const LATENCY_LABEL_MAP: Record<string, string> = {
+  call_requested_at: "Call requested",
+  call_answered_at: "Call answered",
+  stream_connected_at: "Stream connected",
+  first_assistant_audio_at: "First assistant audio",
+  first_user_transcript_at: "First user transcript",
+};
+
+interface LatencyDelta {
+  key: string;
+  label: string;
+  absoluteTime: string;
+  deltaFromStartMs: number | null;
+  deltaFromPreviousMs: number | null;
+}
+
+const MARKER_ORDER = [
+  "call_requested_at",
+  "call_answered_at",
+  "stream_connected_at",
+  "first_assistant_audio_at",
+  "first_user_transcript_at",
+];
+
+function computeLatencyDeltas(metrics: Record<string, string>): LatencyDelta[] {
+  const origin = metrics["call_requested_at"];
+  const originMs = origin ? Date.parse(origin) : null;
+
+  const orderedKeys = [
+    ...MARKER_ORDER.filter((k) => k in metrics),
+    ...Object.keys(metrics).filter((k) => !MARKER_ORDER.includes(k)),
+  ];
+
+  let prevMs: number | null = originMs;
+
+  return orderedKeys.map((key) => {
+    const value = metrics[key];
+    const ts = Date.parse(value);
+    const deltaFromStartMs = originMs !== null && !isNaN(ts) ? ts - originMs : null;
+    const deltaFromPreviousMs = prevMs !== null && !isNaN(ts) ? ts - prevMs : null;
+    prevMs = isNaN(ts) ? prevMs : ts;
+    return {
+      key,
+      label: LATENCY_LABEL_MAP[key] ?? key.replace(/_/g, " "),
+      absoluteTime: value,
+      deltaFromStartMs,
+      deltaFromPreviousMs,
+    };
+  });
+}
+
+function fmtMs(ms: number | null): string {
+  if (ms === null) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
 export function CallDetail() {
   const { toast } = useToast();
   const { callId } = useParams<{ callId: string }>();
@@ -75,6 +175,9 @@ export function CallDetail() {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const [recordingLoading, setRecordingLoading] = useState(false);
+  const [analytics, setAnalytics] = useState<CallAnalytics | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
 
   useEffect(() => {
     if (!callId) return;
@@ -100,6 +203,25 @@ export function CallDetail() {
 
     void fetchCall();
   }, [callId, toast]);
+
+  useEffect(() => {
+    if (!callId || call?.status !== "completed") return;
+
+    const fetchAnalytics = async () => {
+      try {
+        setAnalyticsLoading(true);
+        const response = await api.get<CallAnalytics>(`/calls/${callId}/analytics`);
+        setAnalytics(response.data);
+      } catch (err) {
+        console.error("Failed to fetch call analytics", err);
+      } finally {
+        setAnalyticsLoading(false);
+      }
+    };
+
+    void fetchAnalytics();
+  }, [callId, call?.status]);
+
 
   useEffect(() => {
     if (!callId || !call?.recording_url) {
@@ -427,10 +549,171 @@ export function CallDetail() {
           <Card className="border-border/50 bg-card/70">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
+                <PieChartIcon className="h-4 w-4 text-primary" />
+                Cost Analytics
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="h-[240px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={[
+                        { name: "LLM", value: call.cost_breakdown?.costs?.llm_usd || 0 },
+                        { name: "STT", value: call.cost_breakdown?.costs?.stt_usd || 0 },
+                        { name: "TTS", value: call.cost_breakdown?.costs?.tts_usd || 0 },
+                        { name: "Telephony", value: call.cost_breakdown?.costs?.telephony_usd || 0 },
+                      ].filter(d => d.value > 0)}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={80}
+                      paddingAngle={5}
+                      dataKey="value"
+                    >
+                      {[
+                        "#8884d8", // LLM - Purple
+                        "#82ca9d", // STT - Green
+                        "#ffc658", // TTS - Yellow
+                        "#ff8042", // Telephony - Orange
+                      ].map((color, index) => (
+                        <Cell key={`cell-${index}`} fill={color} stroke="none" />
+                      ))}
+                    </Pie>
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
+                      formatter={(value: number) => [`$${value.toFixed(6)}`, 'Cost']}
+                    />
+                    <Legend verticalAlign="bottom" height={36} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/50 bg-card/70">
+            <CardHeader className="flex flex-row items-center justify-between gap-4">
+              <CardTitle className="flex items-center gap-2">
+                <BarChartIcon className="h-4 w-4 text-primary" />
+                Turn Analysis
+              </CardTitle>
+              {analytics?.turns?.[0]?.run_url && (
+                <a 
+                  href={analytics.turns[0].run_url} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center text-xs text-muted-foreground hover:text-primary transition-colors"
+                >
+                  <ExternalLink className="mr-1 h-3 w-3" />
+                  View Full Trace
+                </a>
+              )}
+            </CardHeader>
+
+            <CardContent>
+              {analyticsLoading ? (
+                <div className="flex h-48 items-center justify-center">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : analytics && analytics.turns.length > 0 ? (
+                <div className="space-y-8">
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                      <Activity className="h-4 w-4" />
+                      Latency per Turn (ms)
+                    </div>
+                    <div className="h-[200px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={analytics.turns}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                          <XAxis 
+                            dataKey="start_time" 
+                            tick={false}
+                            label={{ value: 'Turn Sequence', position: 'insideBottom', offset: -5 }}
+                          />
+                          <YAxis fontSize={12} tickFormatter={(value) => `${value}ms`} />
+                          <Tooltip
+                            contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
+                            labelFormatter={(label) => new Date(label).toLocaleTimeString()}
+                          />
+                          <Bar dataKey="latency_ms" fill="#8884d8" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                      <DollarSign className="h-4 w-4" />
+                      Cost per Turn (USD)
+                    </div>
+                    <div className="h-[200px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={analytics.turns}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                          <XAxis 
+                            dataKey="start_time" 
+                            tick={false}
+                            label={{ value: 'Turn Sequence', position: 'insideBottom', offset: -5 }}
+                          />
+                          <YAxis fontSize={12} tickFormatter={(value) => `$${value.toFixed(4)}`} />
+                          <Tooltip
+                            contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
+                            labelFormatter={(label) => new Date(label).toLocaleTimeString()}
+                            formatter={(value: number) => [`$${value.toFixed(6)}`, 'Cost']}
+                          />
+                          <Bar dataKey="cost_usd" fill="#82ca9d" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                      <Cpu className="h-4 w-4" />
+                      Tokens per Turn
+                    </div>
+                    <div className="h-[200px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={analytics.turns}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                          <XAxis 
+                            dataKey="start_time" 
+                            tick={false}
+                            label={{ value: 'Turn Sequence', position: 'insideBottom', offset: -5 }}
+                          />
+                          <YAxis fontSize={12} />
+                          <Tooltip
+                            contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
+                            labelFormatter={(label) => new Date(label).toLocaleTimeString()}
+                          />
+                          <Bar dataKey="input_tokens" name="Input" fill="#8884d8" stackId="a" />
+                          <Bar dataKey="output_tokens" name="Output" fill="#82ca9d" stackId="a" />
+                          <Legend verticalAlign="top" height={36}/>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+
+                <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-6 text-sm text-muted-foreground text-center">
+                  <Sparkles className="mx-auto h-8 w-8 mb-2 opacity-20" />
+                  Detailed turn analytics are being aggregated from LangSmith. 
+                  Check back in a few moments for the granular breakdown.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/50 bg-card/70">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
                 <Radio className="h-4 w-4 text-primary" />
                 Runtime Breakdown
               </CardTitle>
             </CardHeader>
+
+
             <CardContent className="space-y-3 text-sm">
               <div className="flex items-center justify-between rounded-lg border border-border/50 bg-background/50 px-4 py-3">
                 <span className="text-muted-foreground">LLM</span>
@@ -466,7 +749,42 @@ export function CallDetail() {
               </div>
             </CardContent>
           </Card>
+
+          {call.latency_metrics && Object.keys(call.latency_metrics).length > 0 && (() => {
+            const deltas = computeLatencyDeltas(call.latency_metrics as Record<string, string>);
+            return (
+              <Card className="border-border/50 bg-card/70">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Timer className="h-4 w-4 text-primary" />
+                    Latency Benchmarks
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  {deltas.map(({ key, label, absoluteTime, deltaFromStartMs, deltaFromPreviousMs }) => (
+                    <div key={key} className="rounded-lg border border-border/50 bg-background/50 px-4 py-3">
+                      <div className="flex items-center justify-between">
+                        <span className="capitalize text-muted-foreground">{label}</span>
+                        <span className="font-mono text-xs tabular-nums">
+                          {fmtMs(deltaFromStartMs)}
+                          {deltaFromPreviousMs !== null && deltaFromStartMs !== null && deltaFromPreviousMs !== deltaFromStartMs && (
+                            <span className="ml-2 text-[10px] text-muted-foreground">
+                              (+{fmtMs(deltaFromPreviousMs)})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[10px] text-muted-foreground font-mono">
+                        {new Date(absoluteTime).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3 })}
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            );
+          })()}
         </div>
+
 
         <Card className="border-border/50 bg-card/70">
           <CardHeader>

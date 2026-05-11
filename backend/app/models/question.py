@@ -22,11 +22,12 @@ class InterviewQuestion(Base):
     job_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
-    resume_id: Mapped[uuid.UUID] = mapped_column(
+    resume_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("resumes.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
+
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str | None] = mapped_column(
         String(50), nullable=True

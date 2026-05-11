@@ -28,7 +28,9 @@ from app.models.question import InterviewQuestion
 from app.models.resume import Resume
 from app.models.user import User
 from app.schemas.call import CallEvaluationResponse, CallResponse, CallStartResponse
+from app.services.analytics import analytics_service
 from app.services.call_evaluation import auto_evaluate_call_if_ready
+
 from app.services.observability import append_latency_marker
 from app.services.pricing import hydrate_cost_breakdown, merge_cost_breakdown
 from app.services.telephony import TelephonyService, get_telephony_service
@@ -43,6 +45,35 @@ MOCK_CALL_STEPS = [
     ("in_progress", 3),
     ("completed", 4),
 ]
+
+
+async def _verify_public_webhook_endpoint() -> None:
+    """Ensure PUBLIC_URL points to this backend before placing live telephony calls."""
+    health_url = f"{settings.PUBLIC_URL.rstrip('/')}/health"
+    try:
+        async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as client:
+            response = await client.get(health_url)
+    except Exception as exc:
+        raise ValidationError(
+            f"PUBLIC_URL is unreachable: {health_url}. Ensure ngrok is running and the URL is current."
+        ) from exc
+
+    if response.status_code != 200:
+        raise ValidationError(
+            f"PUBLIC_URL health check failed ({response.status_code}) at {health_url}. "
+            "Ensure ngrok is running and PUBLIC_URL matches the active tunnel."
+        )
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise ValidationError(
+            f"PUBLIC_URL returned a non-JSON response at {health_url}. "
+            "This usually means the tunnel URL is stale or offline."
+        ) from exc
+    if payload.get("status") != "ok":
+        raise ValidationError(
+            f"PUBLIC_URL health payload is unexpected at {health_url}: {payload}"
+        )
 
 
 def _call_snapshot(call: Call) -> dict:
@@ -127,35 +158,16 @@ async def _get_owned_resume(
     return row
 
 
-async def _ensure_questions(
-    *,
+async def _check_job_questions(
     db: AsyncSession,
-    job: Job,
-    resume: Resume,
-    generator: QuestionGeneratorAgent,
+    job_id: uuid.UUID,
 ) -> None:
     existing = await db.execute(
-        select(InterviewQuestion.id).where(InterviewQuestion.resume_id == resume.id).limit(1)
+        select(InterviewQuestion.id).where(InterviewQuestion.job_id == job_id).limit(1)
     )
-    if existing.first():
-        return
+    if not existing.first():
+        raise ValidationError("No interview questions found for this job. Please add questions before starting a call.")
 
-    generated = await generator.generate_questions(job, resume)
-    if not generated.questions:
-        raise ValidationError("No interview questions could be generated for this resume.")
-
-    for item in generated.questions:
-        db.add(
-            InterviewQuestion(
-                job_id=job.id,
-                resume_id=resume.id,
-                question_text=item.question_text,
-                category=item.category,
-                difficulty=item.difficulty,
-                order_index=item.order_index,
-            )
-        )
-    await db.flush()
 
 
 @router.post("/api/resumes/{resume_id}/calls/start", response_model=CallStartResponse, status_code=201)
@@ -163,8 +175,8 @@ async def start_call(
     resume_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    generator: QuestionGeneratorAgent = Depends(get_question_generator_agent),
     telephony: TelephonyService = Depends(get_telephony_service),
+
 ):
     """Generate questions if needed, create a call record, and initiate outbound telephony."""
     resume, job = await _get_owned_resume(resume_id, db, current_user)
@@ -183,7 +195,14 @@ async def start_call(
     if active_call.first():
         raise CallInProgressError()
 
-    await _ensure_questions(db=db, job=job, resume=resume, generator=generator)
+    await _check_job_questions(db=db, job_id=job.id)
+
+
+    if (
+        getattr(telephony, "provider_name", "") == "twilio"
+        and not getattr(telephony, "enable_mock_progression", False)
+    ):
+        await _verify_public_webhook_endpoint()
 
     outbound_urls = telephony.build_urls(resume_id=resume.id)
     outbound = telephony.start_outbound_call(
@@ -363,5 +382,36 @@ async def evaluate_call(
     if call.status == "queued":
         call.status = "completed"
     await db.flush()
-
+    await db.commit()
     return CallEvaluationResponse(**call.ai_evaluation)
+
+
+@router.get("/api/calls/{call_id}/analytics")
+async def get_call_analytics(
+    call_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Fetch granular analytics for a call, including turn-by-turn data from LangSmith."""
+    result = await db.execute(
+        select(Call)
+        .join(Job, Call.job_id == Job.id)
+        .where(Call.id == call_id, Job.user_id == current_user.id)
+    )
+    call = result.scalar_one_or_none()
+    if not call:
+        raise NotFoundError(resource="Call")
+    
+    # Fetch from LangSmith
+    turns = analytics_service.get_call_turn_analytics(str(call_id))
+    
+    return {
+        "call_id": str(call_id),
+        "turns": turns,
+        "summary": {
+            "total_latency_ms": sum(t["latency_ms"] for t in turns),
+            "total_tokens": sum(t["total_tokens"] for t in turns),
+            "total_cost_usd": sum(t["cost_usd"] for t in turns),
+            "turn_count": len(turns),
+        }
+    }

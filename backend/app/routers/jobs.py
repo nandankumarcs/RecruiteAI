@@ -19,8 +19,11 @@ from app.core.dependencies import get_current_user
 from app.core.exceptions import NotFoundError, ValidationError
 from app.database import get_db
 from app.models.job import Job
+from app.models.question import InterviewQuestion
 from app.models.user import User
 from app.schemas.job import JobCreate, JobResponse, JobUpdate
+from app.schemas.question import InterviewQuestionCreate, InterviewQuestionResponse, InterviewQuestionUpdate
+
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -126,3 +129,110 @@ async def delete_job(
         
     await db.delete(job)
     await db.flush()
+
+
+# --- Interview Question Management ---
+
+@router.get("/{job_id}/questions", response_model=list[InterviewQuestionResponse])
+async def list_job_questions(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all interview questions for a specific job."""
+    result = await db.execute(
+        select(Job).where(Job.id == job_id, Job.user_id == current_user.id)
+    )
+    if not result.scalar_one_or_none():
+        raise NotFoundError(resource="Job")
+
+    result = await db.execute(
+        select(InterviewQuestion)
+        .where(InterviewQuestion.job_id == job_id)
+        .order_by(InterviewQuestion.order_index.asc())
+    )
+    return result.scalars().all()
+
+
+@router.post("/{job_id}/questions", response_model=InterviewQuestionResponse, status_code=201)
+async def add_job_question(
+    job_id: uuid.UUID,
+    question_in: InterviewQuestionCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Add a new interview question to a job."""
+    result = await db.execute(
+        select(Job).where(Job.id == job_id, Job.user_id == current_user.id)
+    )
+    if not result.scalar_one_or_none():
+        raise NotFoundError(resource="Job")
+
+    question = InterviewQuestion(
+        job_id=job_id,
+        question_text=question_in.question_text,
+        category=question_in.category,
+        difficulty=question_in.difficulty,
+        order_index=question_in.order_index,
+    )
+    db.add(question)
+    await db.flush()
+    await db.refresh(question)
+    return question
+
+
+@router.put("/{job_id}/questions/{question_id}", response_model=InterviewQuestionResponse)
+async def update_job_question(
+    job_id: uuid.UUID,
+    question_id: uuid.UUID,
+    question_in: InterviewQuestionUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update a specific interview question."""
+    result = await db.execute(
+        select(InterviewQuestion)
+        .join(Job, InterviewQuestion.job_id == Job.id)
+        .where(
+            InterviewQuestion.id == question_id,
+            Job.id == job_id,
+            Job.user_id == current_user.id
+        )
+    )
+    question = result.scalar_one_or_none()
+    if not question:
+        raise NotFoundError(resource="InterviewQuestion")
+
+    update_data = question_in.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(question, field, value)
+
+    await db.flush()
+    await db.refresh(question)
+    return question
+
+
+@router.delete("/{job_id}/questions/{question_id}", status_code=204)
+async def delete_job_question(
+    job_id: uuid.UUID,
+    question_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a specific interview question."""
+    result = await db.execute(
+        select(InterviewQuestion)
+        .join(Job, InterviewQuestion.job_id == Job.id)
+        .where(
+            InterviewQuestion.id == question_id,
+            Job.id == job_id,
+            Job.user_id == current_user.id
+        )
+    )
+    question = result.scalar_one_or_none()
+    if not question:
+        raise NotFoundError(resource="InterviewQuestion")
+
+    await db.delete(question)
+    await db.flush()
+

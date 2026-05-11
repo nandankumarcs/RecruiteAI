@@ -30,7 +30,7 @@ This plan is written so it can be used in a fresh chat session without relying o
 These decisions are assumed throughout the plan:
 
 1. **OpenAI stays in the system** for reasoning and conversation intelligence.
-2. **Plivo replaces or supplements Twilio** as the telephony provider, using an abstraction layer that supports both.
+2. **Twilio remains the telephony provider** for this optimization workstream.
 3. **Deepgram will be introduced into the voice pipeline** where it improves cost and/or quality.
 4. The backend remains the **source of truth** for:
    - consent handling
@@ -81,7 +81,6 @@ Recruiter Dashboard
   -> Backend API
   -> Telephony abstraction
       -> Twilio provider
-      -> Plivo provider
   -> Voice runtime abstraction
       -> OpenAI Realtime bridge
       -> Deepgram-enhanced voice pipeline
@@ -93,13 +92,13 @@ Recruiter Dashboard
 Planned target voice stack direction:
 
 ```text
-Plivo PSTN call
-  -> Plivo bidirectional stream
+Twilio PSTN call
+  -> Twilio bidirectional stream
   -> FastAPI backend voice orchestrator
   -> Deepgram STT
   -> OpenAI text reasoning
   -> Deepgram TTS
-  -> Plivo stream back to caller
+  -> Twilio stream back to caller
 ```
 
 Important:
@@ -143,7 +142,6 @@ Suggested interface:
 Providers:
 
 - `TwilioTelephonyProvider`
-- `PlivoTelephonyProvider`
 
 ### 2. Voice runtime abstraction
 
@@ -179,7 +177,7 @@ This must stay provider-agnostic.
 
 ---
 
-## Phase 0 — Instrumentation and Benchmark Baseline
+## Phase 0 — Instrumentation and Benchmark Baseline [DONE]
 
 ### Objective
 
@@ -224,7 +222,7 @@ We have objective baseline metrics before migration work begins.
 
 ---
 
-## Phase 1 — Immediate Text-Agent Cost Reduction
+## Phase 1 — Immediate Text-Agent Cost Reduction [DONE]
 
 ### Objective
 
@@ -261,7 +259,7 @@ Per-candidate text-AI cost is reduced with no meaningful quality regression.
 
 ---
 
-## Phase 2 — Prompt and Session-Update Cost Optimization
+## Phase 2 — Prompt and Session-Update Cost Optimization [DONE]
 
 ### Objective
 
@@ -299,7 +297,7 @@ Realtime control token waste is reduced without changing behavior.
 
 ---
 
-## Phase 3 — Telephony Abstraction Cleanup
+## Phase 3 — Telephony Abstraction Cleanup [DONE]
 
 ### Objective
 
@@ -323,44 +321,39 @@ Refactor telephony code into explicit provider modules.
 
 ### Exit criteria
 
-Twilio is still working, but the code is now ready for Plivo support.
+Twilio is still working, and the code is ready for runtime optimization without reopening carrier work.
 
 ---
 
-## Phase 4 — Add Plivo Telephony Support in Parallel
+## Phase 4 — Keep Twilio Telephony and Harden the Abstraction [DONE]
 
 ### Objective
 
-Introduce Plivo as a second telephony provider and enable side-by-side testing.
+Keep telephony concerns isolated while preserving the existing Twilio path.
 
 ### Scope
 
-Support Plivo outbound calling and Plivo bidirectional audio streaming while keeping Twilio available.
+Preserve Twilio outbound calling and Twilio bidirectional audio streaming while keeping local mock support available.
 
 ### Implementation tasks
 
-1. Add Plivo config values:
-   - auth ID
-   - auth token
-   - phone number
-   - provider selector
-2. Add Plivo outbound call creation.
-3. Add Plivo answer XML generation using `<Stream bidirectional="true">`.
-4. Add Plivo webhook routes if payload shape differs from Twilio.
-5. Add Plivo stream status callback route.
-6. Make the provider selectable by env var or feature flag.
+1. Keep the telephony provider interface explicit.
+2. Keep Twilio outbound call creation isolated behind the provider class.
+3. Keep Twilio answer TwiML generation isolated behind provider helpers.
+4. Keep webhook parsing/provider-specific call ID handling isolated from core conversation logic.
+5. Preserve env-based provider selection for `twilio` and local `mock`.
 
 ### Verification
 
 #### Automated
 
 1. Unit tests for provider selection.
-2. Tests for Plivo answer XML generation.
-3. Tests for Plivo callback parsing.
+2. Tests for Twilio answer URL/TwiML generation.
+3. Tests for Twilio callback parsing.
 
 #### Manual
 
-1. Start a call through the UI using Plivo mode.
+1. Start a call through the UI using Twilio mode.
 2. Confirm:
    - outbound call is placed
    - media stream connects
@@ -369,11 +362,11 @@ Support Plivo outbound calling and Plivo bidirectional audio streaming while kee
 
 ### Exit criteria
 
-Plivo can successfully place and stream a real interview call through the existing backend architecture.
+Twilio continues to successfully place and stream a real interview call through the existing backend architecture.
 
 ---
 
-## Phase 5 — Deepgram STT Introduction
+## Phase 5 — Deepgram STT Introduction [DONE]
 
 ### Objective
 
@@ -423,7 +416,7 @@ Deepgram STT is at least as good as the current transcript path and does not cre
 
 ---
 
-## Phase 6 — Deepgram TTS Introduction
+## Phase 6 — Deepgram TTS Introduction [DONE]
 
 ### Objective
 
@@ -460,14 +453,14 @@ The Deepgram TTS pipeline produces acceptable latency and audio quality in real 
 
 ---
 
-## Phase 7 — Full Orchestrated Voice Runtime
+## Phase 7 — Full Orchestrated Voice Runtime [DONE]
 
 ### Objective
 
 Run the full live call pipeline as:
 
 ```text
-Plivo <-> backend <-> Deepgram STT <-> OpenAI text reasoning <-> Deepgram TTS <-> backend <-> Plivo
+Twilio <-> backend <-> Deepgram STT <-> OpenAI text reasoning <-> Deepgram TTS <-> backend <-> Twilio
 ```
 
 ### Scope
@@ -508,7 +501,7 @@ The orchestrated pipeline is good enough to become the default development path.
 
 ---
 
-## Phase 8 — Frontend and Observability Hardening
+## Phase 8 — Frontend and Observability Hardening [IN PROGRESS]
 
 ### Objective
 
@@ -564,8 +557,7 @@ Measure whether the optimization effort actually delivered the intended business
 Choose one default development path:
 
 1. `Twilio + OpenAI Realtime`
-2. `Plivo + OpenAI Realtime`
-3. `Plivo + Deepgram STT/TTS + OpenAI reasoning`
+2. `Twilio + Deepgram STT/TTS + OpenAI reasoning`
 
 ### Exit criteria
 
@@ -581,7 +573,7 @@ If the goal is **fastest savings and best product**, do phases in this order:
 2. Phase 1 — Text-agent model downgrade
 3. Phase 2 — Prompt/session optimization
 4. Phase 3 — Telephony abstraction cleanup
-5. Phase 4 — Plivo support
+5. Phase 4 — Twilio telephony hardening
 6. Phase 5 — Deepgram STT
 7. Phase 6 — Deepgram TTS
 8. Phase 7 — Full orchestrated runtime
@@ -616,14 +608,14 @@ Mitigation:
 3. stream aggressively where possible
 4. keep assistant responses short
 
-### 2. Provider protocol differences
+### 2. Runtime protocol differences
 
-Plivo is not a drop-in Twilio clone.
+Deepgram and OpenAI Realtime have different event shapes and latency profiles.
 
 Mitigation:
 
-1. keep provider adapters isolated
-2. write provider-specific tests
+1. keep runtime adapters isolated
+2. write runtime-specific tests
 3. verify real calls early
 
 ### 3. Conversation-quality regressions
@@ -653,9 +645,8 @@ If starting from a fresh chat, use this context:
 
 > We are implementing the plan in `docs/cost_optimization_implementation_plan.md`.  
 > Keep OpenAI in the stack.  
-> Add Plivo support in parallel with Twilio behind a telephony abstraction.  
+> Keep Twilio as the telephony provider and focus optimization effort on runtime and cost instrumentation.  
 > Introduce Deepgram incrementally, starting with STT, then TTS, then a full orchestrated voice pipeline.  
 > Optimize for fastest per-call savings, ultra low latency, and best product quality.  
 > The backend state machine must remain authoritative for consent, off-topic handling, interview progression, interruption handling, and hangup behavior.  
 > Do not do a big-bang rewrite. Complete one phase at a time, verify it, fix issues, and commit before moving on.
-

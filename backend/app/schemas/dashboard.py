@@ -16,3 +16,5 @@ class DashboardMetricsResponse(BaseModel):
     average_cost_per_call_usd: float | None = None
     realtime_calls: int = 0
     pipeline_calls: int = 0
+    average_latency_ms: float | None = None
+

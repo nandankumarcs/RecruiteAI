@@ -67,9 +67,7 @@ def estimate_deepgram_tts_cost(*, characters: int | None) -> float:
 def estimate_telephony_cost(*, provider: str, duration_seconds: int | None) -> float:
     minutes = _safe_float(duration_seconds) / 60.0
     rate = 0.0
-    if provider == "plivo":
-        rate = settings.PLIVO_ESTIMATED_COST_PER_MINUTE_USD
-    elif provider == "twilio":
+    if provider == "twilio":
         rate = settings.TWILIO_ESTIMATED_COST_PER_MINUTE_USD
     return _round_currency(minutes * rate)
 

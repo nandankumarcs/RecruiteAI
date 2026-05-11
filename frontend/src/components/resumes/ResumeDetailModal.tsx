@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { api, getWebSocketBaseUrl } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { CallRecord } from "@/lib/calls";
 import { useToast } from "@/context/ToastContext";
 import { Badge } from "@/components/ui/badge";
@@ -56,6 +56,9 @@ const difficultyClasses: Record<number, string> = {
   5: "bg-rose-500/10 text-rose-600 border-rose-500/20",
 };
 
+import { useCallWebSocket } from "@/hooks/useCallWebSocket";
+
+
 export function ResumeDetailModal({
   resume,
   activeCall,
@@ -67,22 +70,20 @@ export function ResumeDetailModal({
   const { toast } = useToast();
   const [questions, setQuestions] = useState<InterviewQuestion[]>([]);
   const [isQuestionsLoading, setIsQuestionsLoading] = useState(false);
-  const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
   const [questionsError, setQuestionsError] = useState<string | null>(null);
+
   const [isStartingCall, setIsStartingCall] = useState(false);
   const [callError, setCallError] = useState<string | null>(null);
-  const [startedCall, setStartedCall] = useState<CallRecord | null>(null);
-  const onCallUpdateRef = useRef(onCallUpdate);
+  const [startedCallInternal, setStartedCallInternal] = useState<CallRecord | null>(activeCall ?? null);
 
-  useEffect(() => {
-    onCallUpdateRef.current = onCallUpdate;
-  }, [onCallUpdate]);
+  const { lastCall } = useCallWebSocket(isOpen ? (startedCallInternal?.id || activeCall?.id) : undefined, onCallUpdate);
+  const startedCall = lastCall ?? startedCallInternal;
 
   useEffect(() => {
     if (!resume || !isOpen || resume.status !== "parsed") {
       setQuestions([]);
       setQuestionsError(null);
-      setStartedCall(activeCall ?? null);
+      setStartedCallInternal(activeCall ?? null);
       setCallError(null);
       return;
     }
@@ -92,10 +93,10 @@ export function ResumeDetailModal({
       setQuestionsError(null);
 
       try {
-        const response = await api.get<QuestionSetResponse>(
-          `/resumes/${resume.id}/questions`
+        const response = await api.get<InterviewQuestion[]>(
+          `/jobs/${resume.job_id}/questions`
         );
-        setQuestions(response.data.questions || []);
+        setQuestions(response.data || []);
       } catch (error) {
         console.error("Failed to load interview questions", error);
         setQuestionsError("Unable to load interview questions right now.");
@@ -107,21 +108,6 @@ export function ResumeDetailModal({
     void loadQuestions();
   }, [resume, isOpen, activeCall]);
 
-  useEffect(() => {
-    if (!startedCall?.id || !isOpen) return;
-
-    const socket = new WebSocket(`${getWebSocketBaseUrl()}/ws/calls/${startedCall.id}`);
-
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload.type === "call_update" && payload.call) {
-        setStartedCall(payload.call);
-        onCallUpdateRef.current?.(payload.call);
-      }
-    };
-
-    return () => socket.close();
-  }, [startedCall?.id, isOpen]);
 
   if (!resume) return null;
 
@@ -129,34 +115,7 @@ export function ResumeDetailModal({
   const skills = parsedData.skills || [];
   const experience = parsedData.experience || [];
 
-  const handleGenerateQuestions = async () => {
-    if (!resume) return;
 
-    setIsGeneratingQuestions(true);
-    setQuestionsError(null);
-
-    try {
-      const response = await api.post<QuestionSetResponse>(
-        `/resumes/${resume.id}/questions/generate`
-      );
-      setQuestions(response.data.questions || []);
-      toast({
-        variant: "success",
-        title: "Questions ready",
-        description: "Interview questions were generated for this candidate.",
-      });
-    } catch (error) {
-      console.error("Failed to generate interview questions", error);
-      setQuestionsError("Question generation failed. Please try again.");
-      toast({
-        variant: "error",
-        title: "Question generation failed",
-        description: "We couldn't build interview questions right now.",
-      });
-    } finally {
-      setIsGeneratingQuestions(false);
-    }
-  };
 
   const handleStartCall = async () => {
     if (!resume) return;
@@ -168,7 +127,7 @@ export function ResumeDetailModal({
       const response = await api.post<CallStartResponse>(
         `/resumes/${resume.id}/calls/start`
       );
-      setStartedCall(response.data.call);
+      setStartedCallInternal(response.data.call);
       onCallUpdate?.(response.data.call);
       toast({
         variant: "success",
@@ -187,6 +146,7 @@ export function ResumeDetailModal({
       setIsStartingCall(false);
     }
   };
+
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -355,17 +315,8 @@ export function ResumeDetailModal({
                     <FileQuestion className="h-4 w-4" />
                     Interview Strategy
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleGenerateQuestions}
-                    disabled={resume.status !== "parsed" || isGeneratingQuestions}
-                    className="h-8 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-primary/10 hover:text-primary transition-all"
-                  >
-                    {isGeneratingQuestions || isQuestionsLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Sparkles className="h-3 w-3 mr-1" />}
-                    {questions.length > 0 ? "Regenerate" : "Generate List"}
-                  </Button>
                 </div>
+
 
                 {questionsError && (
                   <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-4 py-3 text-xs font-bold uppercase tracking-wider text-destructive">
@@ -403,9 +354,11 @@ export function ResumeDetailModal({
                     <div className="w-16 h-16 bg-muted/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-border/40">
                       <FileQuestion className="h-8 w-8 text-muted-foreground/30" />
                     </div>
-                    <p className="text-xs font-black text-muted-foreground uppercase tracking-[0.2em]">No questions generated yet</p>
+                    <p className="text-xs font-black text-muted-foreground uppercase tracking-[0.2em]">No questions added to this job yet</p>
+                    <p className="text-[10px] text-muted-foreground/60 font-medium mt-2">Add manual questions in the Job Strategy tab.</p>
                   </div>
                 )}
+
               </section>
 
               {/* Work History */}

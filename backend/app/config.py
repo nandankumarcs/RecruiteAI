@@ -41,30 +41,28 @@ class Settings(BaseSettings):
     OPENAI_REALTIME_AUDIO_OUTPUT_COST_PER_1M: float = 20.0
     OPENAI_REALTIME_RUNTIME_LABEL: str = "openai_realtime"
 
+    # --- Deepgram ---
+    DEEPGRAM_API_KEY: str = ""
+    DEEPGRAM_STT_MODEL: str = "nova-2-phonecall"
+    DEEPGRAM_TTS_MODEL: str = "aura-asteria-en"
+    DEEPGRAM_STT_COST_PER_MINUTE_USD: float = 0.0043
+    DEEPGRAM_TTS_COST_PER_1K_CHARS_USD: float = 0.03
+
     # --- Twilio ---
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_PHONE_NUMBER: str = ""
     TWILIO_MOCK_MODE: bool = True
     TWILIO_ESTIMATED_COST_PER_MINUTE_USD: float = 0.013
+    # Set to True in production to reject requests without a valid X-Twilio-Signature
+    TWILIO_VALIDATE_SIGNATURES: bool = False
 
-    # --- Plivo ---
-    PLIVO_AUTH_ID: str = ""
-    PLIVO_AUTH_TOKEN: str = ""
-    PLIVO_PHONE_NUMBER: str = ""
-    PLIVO_MOCK_MODE: bool = True
-    PLIVO_ESTIMATED_COST_PER_MINUTE_USD: float = 0.01
-
-    # --- Deepgram ---
-    DEEPGRAM_API_KEY: str = ""
-    DEEPGRAM_STT_MODEL: str = "nova-3"
-    DEEPGRAM_TTS_MODEL: str = "aura-2-thalia-en"
-    DEEPGRAM_STT_COST_PER_MINUTE_USD: float = 0.0043
-    DEEPGRAM_TTS_COST_PER_1K_CHARS_USD: float = 0.03
 
     # --- Runtime selection ---
-    TELEPHONY_PROVIDER: str = "twilio"  # twilio, plivo, mock
-    VOICE_RUNTIME: str = "openai_realtime"  # openai_realtime, deepgram_openai_pipeline
+    TELEPHONY_PROVIDER: str = "twilio"  # twilio, mock
+    VOICE_RUNTIME: str = "openai_realtime"  # openai_realtime, deepgram_openai
+    PIPELINE_REASONING_PROVIDER: str = "openai"
+
 
     # --- LangSmith ---
     LANGSMITH_API_KEY: str = ""

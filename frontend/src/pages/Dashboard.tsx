@@ -156,7 +156,12 @@ export function Dashboard() {
         : `$${metrics.total_estimated_cost_usd.toFixed(3)}`;
     }
 
+    if (key === "average_latency_ms") {
+      return metrics.average_latency_ms === null ? "—" : `${Math.round(metrics.average_latency_ms)}ms`;
+    }
+
     return metrics[key];
+
   };
 
   return (
@@ -302,8 +307,15 @@ export function Dashboard() {
               <span className="text-sm font-semibold text-muted-foreground">Live calls</span>
               <span className="text-xl font-black">{metrics?.active_calls ?? 0}</span>
             </div>
+            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/40 px-4 py-3">
+              <span className="text-sm font-semibold text-muted-foreground">Average Latency</span>
+              <span className="text-xl font-black">
+                {renderMetricValue("average_latency_ms")}
+              </span>
+            </div>
           </CardContent>
         </Card>
+
       </section>
     </div>
   );

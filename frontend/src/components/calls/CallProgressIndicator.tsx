@@ -6,6 +6,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import type { CallRecord } from "@/lib/calls";
 import { getWebSocketBaseUrl } from "@/lib/api";
 
+import { useCallWebSocket } from "@/hooks/useCallWebSocket";
+
 interface CallProgressIndicatorProps {
   callId: string;
   initialCall?: CallRecord;
@@ -19,31 +21,11 @@ export function CallProgressIndicator({
   initialCall,
   onUpdate,
 }: CallProgressIndicatorProps) {
-  const [call, setCall] = useState<CallRecord | null>(initialCall ?? null);
-  const [connectionState, setConnectionState] = useState<"connecting" | "live" | "closed">("connecting");
-  const onUpdateRef = useRef(onUpdate);
+  const { connectionState, lastCall } = useCallWebSocket(callId, onUpdate);
+  const [internalCall, setInternalCall] = useState<CallRecord | null>(initialCall ?? null);
 
-  useEffect(() => {
-    onUpdateRef.current = onUpdate;
-  }, [onUpdate]);
+  const call = lastCall ?? internalCall;
 
-  useEffect(() => {
-    setConnectionState("connecting");
-    const socket = new WebSocket(`${getWebSocketBaseUrl()}/ws/calls/${callId}`);
-
-    socket.onopen = () => setConnectionState("live");
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload.type === "call_update" && payload.call) {
-        setCall(payload.call);
-        onUpdateRef.current?.(payload.call);
-      }
-    };
-    socket.onclose = () => setConnectionState("closed");
-    socket.onerror = () => setConnectionState("closed");
-
-    return () => socket.close();
-  }, [callId]);
 
   const currentStepIndex = useMemo(() => {
     if (!call) return 0;

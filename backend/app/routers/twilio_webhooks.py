@@ -12,6 +12,8 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import logging
+
 from app.config import get_settings
 from app.database import get_db
 from app.models.call import Call
@@ -19,6 +21,10 @@ from app.services.observability import append_latency_marker
 from app.services.pricing import estimate_telephony_cost, merge_cost_breakdown
 from app.services.call_evaluation import auto_evaluate_call_if_ready, call_is_finished
 from app.services.voice_runtime import VoiceRuntimeService, get_voice_runtime_service
+from app.dependencies.twilio_signature import verify_twilio_signature
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 settings = get_settings()
 
@@ -44,7 +50,7 @@ STATUS_MAP = {
 }
 
 
-@router.post("/webhooks/twilio/voice")
+@router.post("/webhooks/twilio/voice", dependencies=[Depends(verify_twilio_signature)])
 async def twilio_voice_webhook(call_resume_id: str | None = None):
     """Return TwiML that connects the live call audio to our websocket bridge."""
     if VoiceResponse is None:
@@ -76,7 +82,7 @@ async def twilio_voice_webhook(call_resume_id: str | None = None):
     return Response(content=str(response), media_type="application/xml")
 
 
-@router.post("/webhooks/twilio/status", status_code=204)
+@router.post("/webhooks/twilio/status", status_code=204, dependencies=[Depends(verify_twilio_signature)])
 async def twilio_status_webhook(
     CallSid: str = Form(...),
     CallStatus: str = Form(...),
@@ -166,4 +172,10 @@ async def twilio_media_stream(
     bridge: VoiceRuntimeService = Depends(get_voice_runtime_service),
 ):
     """Bidirectional websocket endpoint for Twilio media streams."""
-    await bridge.handle(websocket, resume_id, provider="twilio")
+    import sys as _sys
+    print("=== DEBUG twilio_media_stream CALLED ===", file=_sys.stderr, flush=True)
+    print(f"=== DEBUG resume_id={resume_id} runtime={getattr(bridge, '_runtime_name', 'unknown')} ===", file=_sys.stderr, flush=True)
+    try:
+        await bridge.handle(websocket, resume_id, provider="twilio")
+    except Exception as e:
+        print(f"=== DEBUG twilio_media_stream ERROR: {e} ===", file=_sys.stderr, flush=True)

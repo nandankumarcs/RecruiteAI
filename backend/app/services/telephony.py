@@ -1,11 +1,9 @@
-"""Telephony provider abstraction with Twilio, Plivo, and mock implementations."""
+"""Telephony abstraction with Twilio and mock implementations."""
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Protocol
-from urllib.parse import quote
 from xml.sax.saxutils import escape
 
 from pydantic import BaseModel
@@ -19,12 +17,6 @@ try:
 except Exception:  # pragma: no cover
     TwilioClient = None
 
-try:
-    import plivo
-except Exception:  # pragma: no cover
-    plivo = None
-
-
 class OutboundCallResult(BaseModel):
     call_sid: str
     status: str
@@ -36,28 +28,6 @@ class OutboundCallUrls:
     answer_url: str
     status_callback_url: str
     recording_callback_url: str | None = None
-
-
-class TelephonyProvider(Protocol):
-    provider_name: str
-    enable_mock_progression: bool
-
-    def build_urls(self, *, resume_id: uuid.UUID) -> OutboundCallUrls: ...
-
-    def start_outbound_call(
-        self,
-        *,
-        to_number: str,
-        answer_url: str,
-        status_callback_url: str,
-        recording_callback_url: str | None = None,
-    ) -> OutboundCallResult: ...
-
-    def end_call(self, call_sid: str) -> None: ...
-
-    def say_and_hangup(self, call_sid: str, message: str) -> None: ...
-
-    def start_recording(self, call_sid: str, callback_url: str | None = None) -> None: ...
 
 
 class MockTelephonyProvider:
@@ -176,103 +146,12 @@ class TwilioTelephonyProvider:
         return
 
 
-class PlivoTelephonyProvider:
-    provider_name = "plivo"
-    enable_mock_progression = False
-
-    def __init__(self) -> None:
-        self.mock_mode = bool(
-            settings.PLIVO_MOCK_MODE
-            or not settings.PLIVO_AUTH_ID
-            or not settings.PLIVO_AUTH_TOKEN
-            or not settings.PLIVO_PHONE_NUMBER
-            or plivo is None
-        )
-        self._client = None
-        if not self.mock_mode and plivo is not None:
-            self._client = plivo.RestClient(settings.PLIVO_AUTH_ID, settings.PLIVO_AUTH_TOKEN)
-
-    def build_urls(self, *, resume_id: uuid.UUID) -> OutboundCallUrls:
-        base = settings.PUBLIC_URL.rstrip("/")
-        return OutboundCallUrls(
-            answer_url=f"{base}/webhooks/plivo/answer?call_resume_id={resume_id}",
-            status_callback_url=f"{base}/webhooks/plivo/status",
-            recording_callback_url=f"{base}/webhooks/plivo/recording",
-        )
-
-    def start_outbound_call(
-        self,
-        *,
-        to_number: str,
-        answer_url: str,
-        status_callback_url: str,
-        recording_callback_url: str | None = None,
-    ) -> OutboundCallResult:
-        if self.mock_mode or self._client is None:
-            return MockTelephonyProvider().start_outbound_call(
-                to_number=to_number,
-                answer_url=answer_url,
-                status_callback_url=status_callback_url,
-                recording_callback_url=recording_callback_url,
-            )
-
-        call = self._client.calls.create(
-            from_=settings.PLIVO_PHONE_NUMBER,
-            to_=to_number,
-            answer_url=answer_url,
-            answer_method="GET",
-            hangup_url=status_callback_url,
-            hangup_method="POST",
-            ring_url=status_callback_url,
-            ring_method="POST",
-        )
-        return OutboundCallResult(
-            call_sid=getattr(call, "request_uuid", None) or getattr(call, "call_uuid", None) or str(call),
-            status="queued",
-            provider=self.provider_name,
-        )
-
-    def end_call(self, call_sid: str) -> None:
-        if self.mock_mode or self._client is None:
-            return
-        try:
-            self._client.calls.delete(call_sid)
-        except Exception:
-            return
-
-    def say_and_hangup(self, call_sid: str, message: str) -> None:
-        if self.mock_mode or self._client is None:
-            return
-        redirect_url = (
-            f"{settings.PUBLIC_URL.rstrip('/')}/webhooks/plivo/end-call?"
-            f"message={quote(message)}"
-        )
-        self._client.calls.transfer(
-            call_uuid=call_sid,
-            legs="aleg",
-            aleg_url=redirect_url,
-        )
-
-    def start_recording(self, call_sid: str, callback_url: str | None = None) -> None:
-        if self.mock_mode or self._client is None:
-            return
-        self._client.calls.record(
-            call_uuid=call_sid,
-            file_format="mp3",
-            callback_url=callback_url,
-            callback_method="POST",
-        )
-
-
 class TelephonyService:
     """Facade that selects the configured telephony provider."""
 
     def __init__(self):
         provider_name = (settings.TELEPHONY_PROVIDER or "twilio").strip().lower()
-        self._provider: TelephonyProvider
-        if provider_name == "plivo":
-            self._provider = PlivoTelephonyProvider()
-        elif provider_name == "twilio":
+        if provider_name == "twilio":
             self._provider = TwilioTelephonyProvider()
         else:
             self._provider = MockTelephonyProvider()

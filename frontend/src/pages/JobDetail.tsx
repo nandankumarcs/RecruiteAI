@@ -13,7 +13,9 @@ import { ResumeDetailModal } from "@/components/resumes/ResumeDetailModal";
 import { DeleteConfirmDialog } from "@/components/ui/DeleteConfirmDialog";
 import { CallsTable } from "@/components/calls/CallsTable";
 import { CallProgressIndicator } from "@/components/calls/CallProgressIndicator";
+import { QuestionManager } from "@/components/jobs/QuestionManager";
 import { Skeleton } from "@/components/ui/Skeleton";
+
 import { useToast } from "@/context/ToastContext";
 import { motion, AnimatePresence } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
@@ -27,13 +29,16 @@ interface Job {
   created_at: string;
 }
 
-type DetailTab = "resumes" | "calls" | "details";
+type DetailTab = "resumes" | "calls" | "strategy" | "details";
 
 const tabs: Array<{ key: DetailTab; label: string }> = [
+
   { key: "resumes", label: "Resumes" },
   { key: "calls", label: "Calls" },
+  { key: "strategy", label: "Strategy" },
   { key: "details", label: "Details" },
 ];
+
 
 export function JobDetail() {
   const { toast } = useToast();
@@ -270,7 +275,12 @@ export function JobDetail() {
                 </div>
               )}
 
+              {activeTab === "strategy" && (
+                <QuestionManager jobId={job.id} />
+              )}
+
               {activeTab === "details" && (
+
                 <div className="space-y-6">
                    <div className="px-2">
                     <h3 className="text-3xl font-black tracking-tighter">JOB INFORMATION</h3>

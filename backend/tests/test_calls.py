@@ -46,6 +46,8 @@ class FakeQuestionGeneratorAgent:
 
 
 class FakeTelephonyService:
+    provider_name = "mock"
+
     def __init__(self):
         self.ended_call_sids: list[str] = []
         self.redirected_calls: list[tuple[str, str]] = []
@@ -85,6 +87,11 @@ class FakeTelephonyService:
 
     def start_recording(self, call_sid: str, callback_url: str | None = None):
         return None
+
+
+class FakeLiveTwilioTelephonyService(FakeTelephonyService):
+    provider_name = "twilio"
+    enable_mock_progression = False
 
 
 class FakeEvaluationAgent:
