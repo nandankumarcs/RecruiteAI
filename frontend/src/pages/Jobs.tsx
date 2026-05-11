@@ -317,7 +317,7 @@ export function Jobs() {
                   </TableCell>
                   <TableCell className="text-right py-6 px-6 relative">
                     <div className="flex items-center justify-end">
-                      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-2">
                         <Button 
                           variant="secondary" 
                           size="icon-sm" 
@@ -342,9 +342,6 @@ export function Jobs() {
                         >
                           <Trash2 className="size-4" />
                         </Button>
-                      </div>
-                      <div className="absolute right-6 top-1/2 -translate-y-1/2 group-hover:opacity-0 transition-opacity pointer-events-none">
-                         <MoreHorizontal className="text-muted-foreground" />
                       </div>
                     </div>
                   </TableCell>

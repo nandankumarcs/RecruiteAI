@@ -206,7 +206,7 @@ export function ResumeTable({
                     {new Date(resume.created_at).toLocaleDateString()}
                   </TableCell>
                   <TableCell className="py-4 text-right">
-                    <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-300 translate-x-2 group-hover:translate-x-0">
+                    <div className="flex justify-end gap-1">
                       <Button
                         variant="ghost"
                         size="sm"
