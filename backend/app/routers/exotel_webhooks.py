@@ -117,51 +117,55 @@ import uuid
 @router.websocket("/ws/exotel-media/{resume_id:path}")
 @router.websocket("/webhooks/exotel-stream/{resume_id:path}")
 async def exotel_media_stream(websocket: WebSocket, resume_id: str):
-
     """WebSocket endpoint for Exotel's AgentStream protocol."""
+    # MANDATORY: Accept immediately to prevent 403 Forbidden on handshake
+    await websocket.accept()
+    
     # Log the full URL and params for debugging
     import sys
     sys.stderr.write(f"WebSocket URL: {websocket.url}\n")
     sys.stderr.write(f"WebSocket Query Params: {websocket.query_params}\n")
     sys.stderr.flush()
 
-    # If the resume_id looks like a mangled path or contains garbage, try to extract it or fallback
-    if "telephony/" in resume_id or "CustomField" in resume_id or "passthru" in resume_id:
-        # Check query params first
-        new_id = websocket.query_params.get("CustomField") or websocket.query_params.get("resume_id")
+    # 1. Try to find a UUID in the mangled resume_id string using regex
+    import re
+    uuid_pattern = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
+    
+    # Search in the path first
+    match = uuid_pattern.search(resume_id)
+    if match:
+        resume_id = match.group(0)
+    else:
+        # 2. Search in query params
+        new_id = (
+            websocket.query_params.get("CustomField") 
+            or websocket.query_params.get("resume_id")
+            or websocket.query_params.get("call_resume_id")
+        )
         if new_id:
-            resume_id = new_id
-        else:
+            match = uuid_pattern.search(new_id)
+            if match:
+                resume_id = match.group(0)
+        
+        # 3. Fallback to cache if still no luck
+        if not uuid_pattern.match(resume_id):
             cached_id = get_cached_resume_id()
             if cached_id:
                 resume_id = cached_id
 
-    sys.stderr.write(f"Resolved resume_id for media stream: {resume_id}\n")
+    sys.stderr.write(f"DEBUG: Final Resolved resume_id: {resume_id}\n")
     sys.stderr.flush()
     
     try:
         resume_uuid = uuid.UUID(resume_id)
     except ValueError:
-        # One last desperate attempt if we still have garbage
-        cached_id = get_cached_resume_id()
-        if cached_id:
-            try:
-                resume_uuid = uuid.UUID(cached_id)
-            except ValueError:
-                logger.error(f"Invalid UUID for cached resume_id: {cached_id}")
-                await websocket.accept()
-                await websocket.close(code=1003, reason="Invalid resume_id format")
-                return
-        else:
-            logger.error(f"Invalid UUID for resume_id: {resume_id} and no cache fallback succeeded.")
-            await websocket.accept()
-            await websocket.close(code=1003, reason="Invalid resume_id format")
-            return
-
+        logger.error(f"FATAL: Could not resolve a valid UUID from: {resume_id}")
+        await websocket.close(code=1003, reason="Invalid session ID")
+        return
 
     try:
         runtime = get_voice_runtime_service()
-        # runtime.handle will call websocket.accept()
+        # runtime.handle will NO LONGER call websocket.accept() if it checks state
         await runtime.handle(websocket, resume_uuid, provider="exotel")
     except Exception as e:
         logger.error(f"Error in Exotel media stream: {e}", exc_info=True)

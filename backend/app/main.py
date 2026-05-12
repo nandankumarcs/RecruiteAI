@@ -13,6 +13,7 @@ import os
 from contextlib import asynccontextmanager
 
 import sys
+import asyncio
 from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -123,15 +124,7 @@ app.mount("/static", StaticFiles(directory="/Users/mac/RecruiteAI/backend/static
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        settings.FRONTEND_URL, 
-        "http://localhost:5173", 
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:5175",
-        "http://127.0.0.1:5175"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -179,35 +172,32 @@ async def exotel_voice_webhook(resume_id: str, request: Request):
         except Exception as e:
             logger.warning(f"Failed to parse form data in Exotel webhook: {e}")
 
-    # If Passthrough passed literal {{CustomField}} or 'passthru' in the path, extract from query params
-    if resume_id in ["{{CustomField}}", "passthru"] or "%7B%7BCustomField%7D%7D" in request.url.path:
-        resume_id = params.get("CustomField", resume_id)
-
+    # PRIORITIZE CustomField from Query Parameters (Exotel reliably sends this)
+    custom_field = params.get("CustomField")
+    if custom_field and custom_field not in ["{{CustomField}}", ""]:
+        resume_id = custom_field
+    
     call_sid = params.get("CallSid")
-    if call_sid and resume_id and resume_id != "{{CustomField}}":
+    if call_sid and resume_id and resume_id not in ["{{CustomField}}", "session", "passthru"]:
         cache_exotel_call(call_sid, resume_id)
         print(f"!!! CACHED EXOTEL CALL !!! call_sid={call_sid}, resume_id={resume_id}", file=sys.stderr, flush=True)
 
-    print(f"!!! VOICE WEBHOOK HIT !!! resume_id={resume_id}", file=sys.stderr, flush=True)
+    print(f"!!! VOICE WEBHOOK HIT !!! resume_id={resume_id} (from custom_field: {custom_field})", file=sys.stderr, flush=True)
     
-    # User feedback suggests that Connect Applet with Dynamic URL expects JSON.
-    # While we use Stream applet, if it's configured as a dynamic URL, it might also expect JSON.
-    # We check the Accept header or just provide JSON if it looks like a dynamic URL call.
-    accept_header = request.headers.get("accept", "")
-    if "application/json" in accept_header or params.get("format") == "json":
-        # Dynamic Connect response format
-        return {
-            "destination": {
-                "numbers": [params.get("To", "")]
-            },
-            "record": True,
-            "max_ringing_duration": 45,
-            "max_conversation_duration": 3600
-        }
-
-    # Default to ExoML (XML)
-    xml_content = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
-    return Response(content=xml_content, media_type="application/xml")
+    # Small delay to ensure any parallel API cache operations finish
+    await asyncio.sleep(0.2)
+    
+    # DEFINITIVE FORMAT FROM EXOTEL VOICEBOT DOCS:
+    # { "url": "wss://..." }
+    public_url = "deadline-enjoy-generally-sorry.trycloudflare.com"
+    stream_url = f"wss://{public_url}/ws/exotel-media/voice/{resume_id}"
+    
+    response_payload = {
+        "url": stream_url
+    }
+    
+    print(f"!!! SENDING DEFINITIVE JSON RESPONSE !!!\n{response_payload}", file=sys.stderr, flush=True)
+    return JSONResponse(content=response_payload)
 
 
 

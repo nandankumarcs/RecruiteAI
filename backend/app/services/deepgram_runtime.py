@@ -343,8 +343,11 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         state = ConversationState()
 
         try:
-            await websocket.accept()
-            log_debug("Websocket accepted")
+            if websocket.client_state.name == "CONNECTING":
+                await websocket.accept()
+                log_debug("Websocket accepted")
+            else:
+                log_debug(f"Websocket already in state: {websocket.client_state.name}")
         except Exception as e:
             log_debug(f"ERROR: websocket.accept failed: {e}")
             raise
