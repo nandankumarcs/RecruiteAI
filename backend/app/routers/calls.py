@@ -55,6 +55,7 @@ async def _verify_public_webhook_endpoint() -> None:
         async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as client:
             response = await client.get(health_url)
     except Exception as exc:
+        print(f"DEBUG: Exception in _verify_public_webhook_endpoint: {repr(exc)}")
         raise ValidationError(
             f"PUBLIC_URL is unreachable: {health_url}. Ensure ngrok is running and the URL is current."
         ) from exc
@@ -209,7 +210,7 @@ async def start_call(
 
 
     if (
-        getattr(telephony, "provider_name", "") == "twilio"
+        getattr(telephony, "provider_name", "") in ("twilio", "exotel")
         and not getattr(telephony, "enable_mock_progression", False)
     ):
         await _verify_public_webhook_endpoint()
@@ -228,7 +229,7 @@ async def start_call(
         provider=outbound.provider,
         voice_runtime=settings.VOICE_RUNTIME,
         provider_call_id=outbound.call_sid,
-        twilio_call_sid=outbound.call_sid,
+        twilio_call_sid=outbound.call_sid if outbound.provider == "twilio" else None,
         status=outbound.status,
         phone_number=to_number,
         latency_metrics=append_latency_marker(None, key="call_requested_at"),
@@ -243,7 +244,13 @@ async def start_call(
     )
     db.add(call)
     await db.flush()
+    from sqlalchemy.orm import selectinload
     await db.refresh(call)
+    
+    # Re-fetch with messages loaded to avoid lazy loading error in Pydantic
+    stmt = select(Call).where(Call.id == call.id).options(selectinload(Call.messages))
+    result = await db.execute(stmt)
+    call = result.scalar_one()
 
     if getattr(telephony, "enable_mock_progression", False) and outbound.provider == "mock":
         asyncio.create_task(_simulate_mock_call_progress(call.id))
@@ -333,6 +340,10 @@ async def get_call_recording(
         if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN:
             raise ValidationError("Twilio credentials are not configured for recording playback.")
         client_kwargs["auth"] = (settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    elif call.provider == "exotel":
+        if not settings.EXOTEL_API_KEY or not settings.EXOTEL_API_TOKEN:
+            raise ValidationError("Exotel credentials are not configured for recording playback.")
+        client_kwargs["auth"] = (settings.EXOTEL_API_KEY, settings.EXOTEL_API_TOKEN)
 
     async with httpx.AsyncClient(**client_kwargs) as client:
         recording_response = await client.get(recording_url)

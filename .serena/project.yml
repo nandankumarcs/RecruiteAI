@@ -111,7 +111,7 @@ added_modes:
 
 # initial prompt for the project. It will always be given to the LLM upon activating the project
 # (contrary to the memories, which are loaded on demand).
-initial_prompt: ""
+initial_prompt: "Always use @graphify (graphify-out/GRAPH_REPORT.md) to navigate and explore files for maximum token efficiency. Consult the graph structure to understand project communities and core abstractions before performing deep file reads."
 
 # time budget (seconds) per tool call for the retrieval of additional symbol information
 # such as docstrings or parameter information.

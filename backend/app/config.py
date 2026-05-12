@@ -48,18 +48,24 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_COST_PER_MINUTE_USD: float = 0.0043
     DEEPGRAM_TTS_COST_PER_1K_CHARS_USD: float = 0.03
 
-    # --- Twilio ---
+    # --- Twilio Telephony ---
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_PHONE_NUMBER: str = ""
-    TWILIO_MOCK_MODE: bool = True
     TWILIO_ESTIMATED_COST_PER_MINUTE_USD: float = 0.013
-    # Set to True in production to reject requests without a valid X-Twilio-Signature
     TWILIO_VALIDATE_SIGNATURES: bool = False
 
+    # --- Exotel Telephony ---
+    EXOTEL_ACCOUNT_SID: str = ""
+    EXOTEL_API_KEY: str = ""
+    EXOTEL_API_TOKEN: str = ""
+    EXOTEL_PHONE_NUMBER: str = ""
+    EXOTEL_SUBDOMAIN: str = "api.exotel.com"
+    EXOTEL_ESTIMATED_COST_PER_MINUTE_USD: float = 0.005
+    EXOTEL_VALIDATE_SIGNATURES: bool = False
 
     # --- Runtime selection ---
-    TELEPHONY_PROVIDER: str = "twilio"  # twilio, mock
+    TELEPHONY_PROVIDER: str = "twilio"  # twilio, exotel, mock
     VOICE_RUNTIME: str = "openai_realtime"  # openai_realtime, deepgram_openai
     PIPELINE_REASONING_PROVIDER: str = "openai"
 

@@ -1,0 +1,4 @@
+# RecruiteAI Project Rules
+
+- Use `@graphify` (specifically `graphify-out/GRAPH_REPORT.md`) to navigate and explore the codebase structure for token efficiency before diving into specific files.
+- Refer to the "Community Hubs" and "God Nodes" sections in the graph report to identify core abstractions and related modules.

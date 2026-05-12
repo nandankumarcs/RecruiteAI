@@ -8,6 +8,8 @@ import asyncio
 import json
 import logging
 import uuid
+import audioop
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -537,11 +539,19 @@ class RealtimeBridge:
                                                     key="first_assistant_audio_at",
                                                 )
                                                 await session.commit()
+                                    payload = delta
+                                    if provider == "exotel":
+                                        try:
+                                            pcmu_bytes = base64.b64decode(delta)
+                                            l16_bytes = audioop.ulaw2lin(pcmu_bytes, 2)
+                                            payload = base64.b64encode(l16_bytes).decode('ascii')
+                                        except Exception as e:
+                                            logger.warning("Failed to transcode PCMU to L16: %s", e)
                                     await websocket.send_json(
                                         self._build_audio_event(
                                             provider=provider,
                                             stream_id=stream_id,
-                                            payload=delta,
+                                            payload=payload,
                                         )
                                     )
 
@@ -753,6 +763,13 @@ class RealtimeBridge:
                             media = data.get("media", {})
                             audio_payload = media.get("payload")
                             if audio_payload:
+                                if provider == "exotel":
+                                    try:
+                                        l16_bytes = base64.b64decode(audio_payload)
+                                        pcmu_bytes = audioop.lin2ulaw(l16_bytes, 2)
+                                        audio_payload = base64.b64encode(pcmu_bytes).decode('ascii')
+                                    except Exception as e:
+                                        logger.warning("Failed to transcode L16 to PCMU: %s", e)
                                 await openai_ws.send(
                                     json.dumps(
                                         {
@@ -795,10 +812,23 @@ class RealtimeBridge:
 
     @staticmethod
     def _extract_stream_id(payload: dict) -> str | None:
-        return payload.get("streamSid") or payload.get("streamId") or payload.get("start", {}).get("streamId")
+        return (
+            payload.get("streamSid") 
+            or payload.get("stream_sid") 
+            or payload.get("start", {}).get("streamId")
+            or payload.get("start", {}).get("stream_sid")
+        )
 
     @staticmethod
     def _build_audio_event(*, provider: str, stream_id: str, payload: str) -> dict:
+        if provider == "exotel":
+            return {
+                "event": "media",
+                "stream_sid": stream_id,
+                "media": {
+                    "payload": payload,
+                },
+            }
         return {
             "event": "media",
             "streamSid": stream_id,
@@ -807,11 +837,14 @@ class RealtimeBridge:
 
     @staticmethod
     def _build_clear_audio_event(*, provider: str, stream_id: str) -> dict:
+        if provider == "exotel":
+            return {"event": "clear", "stream_sid": stream_id}
         return {"event": "clear", "streamSid": stream_id}
 
     @staticmethod
     def _extract_provider_call_id(*, provider: str, payload: dict) -> str | None:
-        return payload.get("start", {}).get("callSid")
+        start = payload.get("start", {})
+        return start.get("callSid") or start.get("call_sid") or start.get("leg_sid")
 
 
 def get_realtime_bridge() -> RealtimeBridge:

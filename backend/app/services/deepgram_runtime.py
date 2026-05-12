@@ -15,7 +15,6 @@ from openai import AsyncOpenAI
 import httpx
 from deepgram import (
     DeepgramClient,
-    SpeakOptions,
 )
 
 from app.debug_log import log_debug
@@ -183,9 +182,10 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
             log_debug(f"[{tts_run_id}] ERROR: Missing Deepgram API key for TTS")
             return
 
+        encoding = "linear16" if provider == "exotel" else "mulaw"
         tts_url = (
             f"https://api.deepgram.com/v1/speak?model={settings.DEEPGRAM_TTS_MODEL}"
-            "&encoding=mulaw&sample_rate=8000"
+            f"&encoding={encoding}&sample_rate=8000"
         )
         headers = {
             "Authorization": f"Token {self.deepgram_api_key}",
@@ -253,8 +253,10 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                 return
 
             log_debug(f"[{tts_run_id}] Sending {len(audio_bytes)} audio bytes in chunks...")
-            for i in range(0, len(audio_bytes), 400):
-                chunk = audio_bytes[i : i + 400]
+            chunk_size = 1600 if provider == "exotel" else 400
+            sleep_time = 0.095 if provider == "exotel" else 0.045
+            for i in range(0, len(audio_bytes), chunk_size):
+                chunk = audio_bytes[i : i + chunk_size]
                 if not chunk:
                     continue
                 payload = base64.b64encode(chunk).decode("ascii")
@@ -270,8 +272,8 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                     )
                     await websocket.send_json(event_payload)
                     audio_chunks_sent += 1
-                    # Pacing: 400 bytes ≈ 50 ms of 8 kHz µ-law audio
-                    await asyncio.sleep(0.045)
+                    # Pacing: 1600 bytes ≈ 100 ms of 8 kHz L16, 400 bytes ≈ 50 ms of 8 kHz µ-law
+                    await asyncio.sleep(sleep_time)
                 except Exception as e:
                     log_debug(f"[{tts_run_id}] Error sending to websocket: {e}")
                     break
@@ -321,7 +323,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         )
 
     async def handle(self, websocket: WebSocket, resume_id: uuid.UUID, provider: str = "twilio") -> None:
-        log_debug(f"START handle: resume_id={resume_id}")
+        import sys
+        sys.stderr.write(f"START handle: resume_id={resume_id} provider={provider}\n")
+        sys.stderr.flush()
         if not self.api_key or not self.deepgram_api_key:
             log_debug("ERROR: Missing API keys")
             await websocket.accept()
@@ -350,9 +354,10 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         stop_event = asyncio.Event()
         finalized_segments: list[str] = []
 
+        encoding = "linear16" if provider == "exotel" else "mulaw"
         stt_url = (
             f"wss://api.deepgram.com/v1/listen?model={settings.DEEPGRAM_STT_MODEL}"
-            "&encoding=mulaw&sample_rate=8000&interim_results=true"
+            f"&encoding={encoding}&sample_rate=8000&interim_results=true"
             "&vad_events=true&endpointing=300&utterance_end_ms=1000&punctuate=true&smart_format=true"
         )
         stt_headers = {"Authorization": f"Token {self.deepgram_api_key}"}
@@ -515,15 +520,23 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         except Exception as e:
                             log_debug(f"Websocket receive error: {e}")
                             break
+                        
+                        # Log the raw payload for debugging
+                        print(f"RAW EXOTEL MESSAGE: {payload}", file=sys.stderr, flush=True)
+                        log_debug(f"RAW EXOTEL MESSAGE: {payload}")
+
+                        
                         data = json.loads(payload)
                         event = data.get("event")
-                        if event == "start":
-                            log_debug(f"Event START received: call_id={call_id}")
+                        
+                        if event in ["start", "connected"]:
+                            log_debug(f"Event {event.upper()} received: call_id={call_id}")
                             stream_id = self._extract_stream_id(data)
                             provider_call_id = self._extract_provider_call_id(
                                 provider=provider,
                                 payload=data,
                             ) or provider_call_id
+                            
                             if call_id:
                                 await self._update_call_started(call_id, provider, provider_call_id)
                                 async with self._session_factory()() as session:
@@ -533,31 +546,37 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                             call_record.latency_metrics, key="stream_connected_at"
                                         )
                                         await session.commit()
-                                log_debug(f"Generating opener for call_id={call_id}...")
-                                opener = await self._generate_next_turn(
-                                    call_id=call_id,
-                                    resume=resume,
-                                    job=job,
-                                    questions=questions,
-                                    state=state,
-                                )
-                                log_debug(f"Opener generated: {opener[:50]}...")
-                                if opener:
-                                    if self._is_consent_prompt(opener):
-                                        state.consent_prompt_delivered = True
-                                    await self._append_message(
-                                        call_id,
-                                        "assistant",
-                                        opener,
-                                        item_key=f"deepgram-assistant-opener-{uuid.uuid4()}",
-                                    )
-                                    await self._start_tts_task(
-                                        websocket=websocket,
-                                        provider=provider,
-                                        stream_id=stream_id or "",
-                                        text=opener,
+                                
+                                # Check if we already sent the opener to avoid double greeting
+                                if not hasattr(state, "opener_sent"):
+                                    log_debug(f"Generating opener for call_id={call_id}...")
+                                    opener = await self._generate_next_turn(
                                         call_id=call_id,
+                                        resume=resume,
+                                        job=job,
+                                        questions=questions,
+                                        state=state,
                                     )
+                                    log_debug(f"Opener generated: {opener[:50]}...")
+                                    if opener:
+                                        if self._is_consent_prompt(opener):
+                                            state.consent_prompt_delivered = True
+                                        await self._append_message(
+                                            call_id,
+                                            "assistant",
+                                            opener,
+                                            item_key=f"deepgram-assistant-opener-{uuid.uuid4()}",
+                                        )
+                                        await self._start_tts_task(
+                                            websocket=websocket,
+                                            provider=provider,
+                                            stream_id=stream_id or "",
+                                            text=opener,
+                                            call_id=call_id,
+                                        )
+                                        state.opener_sent = True
+                                else:
+                                    log_debug("Opener already sent, skipping.")
 
                         elif event == "media":
                             audio_payload = (data.get("media") or {}).get("payload")
@@ -569,11 +588,14 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         elif event == "stop":
                             log_debug(f"Event STOP received for call_id={call_id}")
                             break
+                        elif event == "dtmf":
+                            log_debug(f"DTMF received: {data.get('dtmf', {}).get('digit')}")
                         else:
-                            if event != "media": # Avoid spamming media events
-                                log_debug(f"Other event received: {event}")
+                            log_debug(f"Other event received: {event}")
+
                 finally:
                     stt_task.cancel()
+
                 if call_id:
                     async with self._session_factory()() as session:
                         call_record = await session.get(Call, call_id)

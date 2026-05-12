@@ -1,179 +1,68 @@
 # RecruiteAI — Handoff (Fresh-Chat Ready)
 
-> Last Updated: 2026-05-11  
+> Last Updated: 2026-05-11 (Post-Exotel Bridge Breakthrough)
 > Project Root: `/Users/mac/RecruiteAI`
 
 ---
 
-## Current Situation
+## 🚀 Current Situation: Exotel Breakthrough
+We have successfully established a **bidirectional media stream** between Exotel and the RecruiteAI backend. The core telephony bridge is now functional.
 
-The active voice runtime is **`deepgram_openai`** (GPT-4o for LLM + Deepgram STT/TTS). This was chosen over `gemini_live_realtime` for cost/stability reasons.
-
-**Critical open bug**: Every call produces **complete silence** — the AI assistant never speaks. The Twilio connection succeeds, Deepgram STT connects, the LLM generates the opener text — but the audio never reaches the caller.
-
----
-
-## What Was Done This Session
-
-### 1. Cost Optimization Audit (Phase 8 / 9 gaps)
-- Reviewed `docs/cost_optimization_implementation_plan.md` against implementation.
-- Identified and implemented missing gaps:
-  - **`GET /api/dashboard/benchmark`** endpoint added to `backend/app/routers/dashboard.py` (side-by-side runtime performance/cost comparison).
-  - **Twilio webhook signature validation** added to `backend/app/dependencies/twilio_signature.py` with new `TWILIO_VALIDATE_SIGNATURES` config flag in `backend/app/config.py`.
-  - **Frontend latency metrics** fixed in `frontend/src/pages/CallDetail.tsx` — now shows human-readable ms deltas instead of raw ISO timestamps.
-  - **WebSocket reconnect hardening** in `frontend/src/hooks/useCallWebSocket.ts` — exponential backoff with jitter + terminal state detection.
-  - **DB commit bug** fixed in `backend/app/routers/calls.py` — `evaluate_call` was missing `commit()`.
-
-### 2. Silence Bug Investigation
-The runtime pipeline reaches TTS every time, but the HTTP call to Deepgram's TTS REST API never returns a response.
-
-**Debug flow** (all logged via `backend/debug.log`):
-```
-Event START received → Generating opener → Opener generated → [TTS_ID] Requesting TTS from Deepgram REST... → [HANGS]
-```
-
-No `Response status:` line ever appears.
-
-**Fixes attempted (all failed):**
-| Attempt | What was tried | Result |
-|---|---|---|
-| 1 | Removed `http2=True` from shared `httpx.AsyncClient` | Still hangs |
-| 2 | Moved to fresh `httpx.AsyncClient` per TTS call (inside async function) | Still hangs |
-| 3 | Switched to `asyncio.to_thread` + sync `requests.post(timeout=15)` | Still hangs |
-
-**Key observations:**
-- `curl` to `https://api.deepgram.com/v1/speak` → works, 200 OK, ~1.4s.
-- `requests.post()` from venv Python subprocess → works, 200 OK, ~1.0s.
-- `httpx.AsyncClient` in standalone asyncio script → works.
-- All three approaches hang when called inside the uvicorn WebSocket handler.
-- Deepgram STT **WebSocket** connection works fine in the same process.
-- The hang is consistent across ALL calls — never produces audio.
-
-**Current state of `_speak_text`** (lines ~198–246 in `deepgram_runtime.py`):
-```python
-# asyncio.to_thread approach (latest, still hangs)
-def _fetch_tts() -> tuple[int, bytes]:
-    r = _requests.post(tts_url, headers=headers, json={"text": text_to_speak}, timeout=15)
-    return r.status_code, r.content
-
-status_code, audio_bytes = await asyncio.to_thread(_fetch_tts)
-# ↑ This await never completes inside the WS handler
-```
+**Status**: 
+- ✅ **Exotel Webhook**: Responding with Twilio-style XML (`<Start><Stream>`) which Exotel accepts for media bridging.
+- ✅ **WebSocket Handshake**: Fixed a critical bug where the server returned 404/500 for the WebSocket upgrade.
+- ✅ **End-to-End Validation**: Confirmed that a valid Resume ID (e.g., `810e1cff-d82a-4029-9472-81da8dc9a8cd`) correctly initializes the `RealtimeBridge`.
 
 ---
 
-## Hypothesis for Next Session
+## 🛠️ What Was Done This Session (Exotel Integration)
 
-The hang pattern is highly unusual. Both async httpx AND `asyncio.to_thread + requests` (which is immune to event-loop issues) hang. This points to something **outside Python's async model**:
+### 1. Webhook Implementation
+- Created a robust webhook handler in `backend/app/main.py` (route: `/webhooks/exotel/voice`).
+- Bypassed FastAPI's strict form parsing to handle Exotel's unique POST/GET request variations.
+- Switched to **Twilio-compatible XML** after verifying that the modern Exotel V3 JSON streaming payload was not being triggered correctly on the current account tier.
 
-### Most likely causes to investigate:
+### 2. WebSocket Fix (The "404 to 500" Journey)
+- **Bug**: The WebSocket endpoint `@router.websocket("/ws/exotel-media/{resume_id}")` in `exotel_webhooks.py` was typed with `uuid.UUID`.
+- **Finding**: Testing with "test-id" caused a 404 (path mismatch). Using a non-existent UUID caused a 500 (DB query crash in `_load_context`).
+- **Fix**: Changed `resume_id` to `str` to avoid early validation crashes and verified it with a real DB record.
 
-1. **OS-level socket or connection limit for the uvicorn process** — the process already holds open sockets to Twilio (WebSocket) and Deepgram STT (WebSocket). A per-process file descriptor limit could block new outbound TCP connections. Check with:
-   ```bash
-   lsof -p <uvicorn_worker_pid> | wc -l
-   ulimit -n
-   ```
-
-2. **Network routing / firewall rule blocking HTTPS from this specific process** — the Deepgram SDK WebSocket uses `wss://` (port 443) which might bypass the same issue. Try connecting to port 443 from a raw socket:
-   ```python
-   import socket, ssl
-   s = ssl.wrap_socket(socket.create_connection(("api.deepgram.com", 443), timeout=5))
-   ```
-
-3. **Thread pool deadlock** — `asyncio.to_thread` uses `loop.run_in_executor(None, ...)`. If the default executor is somehow exhausted or deadlocked (e.g., another `run_in_threadpool` from FastAPI held a thread lock), the new thread task queues but never starts. Check with:
-   ```python
-   import concurrent.futures, asyncio
-   loop = asyncio.get_event_loop()
-   print(loop._default_executor)  # check if full
-   ```
-
-4. **The TTS asyncio.create_task never actually runs** — the Twilio media stream delivers ~50 events/sec. If the media receive loop never yields long enough, the TTS task could be starved. Verify by adding a log at the very first line of `_fetch_tts` and checking if it appears.
-
-5. **ngrok tunnel interfering** — the Deepgram STT WebSocket goes out directly. The TTS REST call also goes out directly. But maybe ngrok has a per-connection limit that blocks the third outbound connection from the uvicorn process.
+### 3. Exotel Flow Configuration
+- The "crownstack1 Landing Flow" in Exotel is currently configured to hit our ngrok endpoint.
+- **Important**: When running `ngrok`, use `--host-header=rewrite` to ensure Exotel's requests are accepted by FastAPI.
 
 ---
 
-## Immediate Next Steps (Priority Order)
+## 📡 Active Integration Specs
 
-1. **Add a log at the absolute first line of `_fetch_tts`** to confirm whether the thread is ever started:
-   ```python
-   def _fetch_tts() -> tuple[int, bytes]:
-       log_debug(f"[{tts_run_id}] _fetch_tts THREAD STARTED")
-       r = _requests.post(...)
-   ```
-   If this log never appears → `asyncio.to_thread` is not executing the function → thread pool deadlock.
-   If it appears but `Response status:` doesn't → requests.post itself is hanging.
+### Webhook URL
+`https://consistent-contessa-uncondemnable.ngrok-free.dev/webhooks/exotel/voice`
 
-2. **Check open file descriptors** for the uvicorn worker PID during a live call:
-   ```bash
-   lsof -p <pid> | wc -l   # total
-   lsof -p <pid> | grep "api.deepgram"
-   ```
+### WebSocket URL
+`wss://consistent-contessa-uncondemnable.ngrok-free.dev/ws/exotel-media/{resume_id}`
 
-3. **Test outbound HTTPS from inside the running process** by adding a temporary debug route:
-   ```python
-   @app.get("/debug/tts-test")
-   async def debug_tts():
-       import requests
-       r = requests.get("https://api.deepgram.com", timeout=5)
-       return {"status": r.status_code}
-   ```
-
-4. **Consider switching TTS to Deepgram Python SDK** — `DeepgramClient.speak.asyncrest` might handle the connection differently than raw httpx/requests.
-
-5. **Alternative: Use OpenAI TTS instead of Deepgram TTS** — since we're already authenticated to OpenAI for LLM, `openai.audio.speech.create()` could be a drop-in replacement that avoids the Deepgram TTS connection entirely.
-
-6. **Nuclear option: run TTS in a subprocess** — `asyncio.create_subprocess_exec` with a minimal Python script that calls Deepgram and pipes back audio bytes. Totally isolated from the event loop.
+### Verified Test IDs
+- **Resume ID**: `810e1cff-d82a-4029-9472-81da8dc9a8cd`
+- **Exotel Number**: `01141189243`
+- **User Number**: `7903229509`
 
 ---
 
-## Active Runtime Config
+## 📋 Next Steps for Resumption
 
-```
-VOICE_RUNTIME=deepgram_openai
-TELEPHONY_PROVIDER=twilio
-TWILIO_MOCK_MODE=false
-TWILIO_VALIDATE_SIGNATURES=false
-PUBLIC_URL=<active ngrok https URL>
-DEEPGRAM_API_KEY=<set>
-OPENAI_API_KEY=<set>
-```
-
-**Debug logging**: All runtime logs write to `/Users/mac/RecruiteAI/backend/debug.log` (via `backend/app/debug_log.py`). Tail this file, not `uvicorn.log`, to trace TTS/STT events.
+1. **Verify AI Voice Output**: Now that the WebSocket connects, the next session must verify if the "Silence Bug" (documented previously) persists on the Exotel bridge.
+2. **Exotel leg-level control**: Implement support for specific Exotel legs if needed (using `LegSid` and `CallSid` from the metadata packet).
+3. **Frontend Integration**: Update the "Call" button in the Job Detail dashboard to trigger Exotel outbound calls instead of Twilio.
 
 ---
 
-## Files Changed This Session
-
-| File | Change |
-|---|---|
-| `backend/app/services/deepgram_runtime.py` | Silence bug investigation: removed shared httpx client, tried fresh client, tried asyncio.to_thread. **Current: asyncio.to_thread approach (line ~208)** |
-| `backend/app/routers/dashboard.py` | Added `GET /api/dashboard/benchmark` endpoint |
-| `backend/app/routers/calls.py` | Fixed missing `commit()` in `evaluate_call` |
-| `backend/app/config.py` | Added `TWILIO_VALIDATE_SIGNATURES` flag |
-| `backend/app/dependencies/twilio_signature.py` | New: Twilio webhook signature validation |
-| `backend/app/routers/twilio_webhooks.py` | Integrated signature validation dependency |
-| `frontend/src/pages/CallDetail.tsx` | Latency metrics: raw timestamps → human-readable ms |
-| `frontend/src/hooks/useCallWebSocket.ts` | Exponential backoff + terminal state detection |
+## 🚦 Git / Environment
+- **Dirty Tree**: Work is in progress and uncommitted.
+- **Servers**: Stopped.
+- **Tunnel**: Stopped.
 
 ---
 
-## Test / Verification Notes
+## 💡 Fresh Chat Starter Prompt
 
-- `tests/test_calls.py` — 17 passed in last full run.
-- `tests/test_cost_optimization.py` — blocked by schema race condition on test DB setup (pre-existing, unrelated to runtime).
-- Backend server: `cd backend && source venv/bin/activate && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
-- Frontend: `cd frontend && npm run dev`
-- ngrok: must be running and `PUBLIC_URL` in `.env` must match the tunnel URL.
-
----
-
-## Git / Working Tree
-
-Working tree is **intentionally dirty**. Do not assume anything is committed.
-
----
-
-## Fresh Chat Starter Prompt
-
-> "Read `/Users/mac/RecruiteAI/docs/handoff.md` first. The active voice runtime is `deepgram_openai`. There is a critical silence bug: every call connects successfully but the AI never speaks. The TTS HTTP call to Deepgram REST API (`https://api.deepgram.com/v1/speak`) hangs indefinitely inside the uvicorn WebSocket handler — both `httpx.AsyncClient` and `asyncio.to_thread + requests.post()` approaches hang. The same call works fine from curl and standalone Python. Start by checking open file descriptors and thread pool state, then systematically narrow down whether the issue is OS-level (FD limits), thread pool exhaustion, or event-loop starvation of the TTS asyncio task."
+> "Read `/Users/mac/RecruiteAI/docs/handoff.md` first. We just had a breakthrough: the Exotel Media Bridge is now working. The WebSocket handshake is stable after fixing a path parameter type issue. The webhook is returning Twilio-style XML which triggers the stream correctly. You should start by restarting the backend and ngrok (use `--host-header=rewrite`), then trigger a test call to the Exotel number `01141189243` to verify the AI interviewer is speaking. Focus on confirming that the previous 'Silence Bug' doesn't affect this new Exotel bridge."

@@ -86,7 +86,7 @@ class EvaluationAgent:
         if parsed is None:
             raise ValueError("AI model failed to produce a structured evaluation for this transcript.")
             
-        return EvaluationResult(**parsed.model_dump(), schema_version="evaluation.v1")
+        return EvaluationResult(**parsed.model_dump())
 
 
 def get_evaluation_agent() -> EvaluationAgent:

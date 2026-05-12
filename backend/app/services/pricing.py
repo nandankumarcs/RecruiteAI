@@ -69,6 +69,8 @@ def estimate_telephony_cost(*, provider: str, duration_seconds: int | None) -> f
     rate = 0.0
     if provider == "twilio":
         rate = settings.TWILIO_ESTIMATED_COST_PER_MINUTE_USD
+    elif provider == "exotel":
+        rate = settings.EXOTEL_ESTIMATED_COST_PER_MINUTE_USD
     return _round_currency(minutes * rate)
 
 
