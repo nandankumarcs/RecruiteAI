@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 import websockets
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 from openai import AsyncOpenAI
 from sqlalchemy import select
 
@@ -506,7 +507,8 @@ class RealtimeBridge:
         import sys
         print("=== OPENAI HANDLE CALLED ===", file=sys.stderr, flush=True)
         if not self.api_key:
-            await websocket.accept()
+            if websocket.application_state == WebSocketState.CONNECTING:
+                await websocket.accept()
             await websocket.close(code=1011, reason="OpenAI API key is not configured.")
             return
 
@@ -514,7 +516,8 @@ class RealtimeBridge:
         call_id = call.id if call else None
         state = ConversationState()
 
-        await websocket.accept()
+        if websocket.application_state == WebSocketState.CONNECTING:
+            await websocket.accept()
         stream_id: str | None = None
         provider_call_id: str | None = call.provider_call_id if call else call.twilio_call_sid if call else None
         stop_event = asyncio.Event()

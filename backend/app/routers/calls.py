@@ -215,6 +215,29 @@ async def start_call(
     ):
         await _verify_public_webhook_endpoint()
 
+    call = Call(
+        resume_id=resume.id,
+        job_id=job.id,
+        provider=getattr(telephony, "provider_name", None) or settings.TELEPHONY_PROVIDER,
+        voice_runtime=settings.VOICE_RUNTIME,
+        provider_call_id=None,
+        twilio_call_sid=None,
+        status="pending",
+        phone_number=to_number,
+        latency_metrics=append_latency_marker(None, key="call_requested_at"),
+        cost_breakdown=merge_cost_breakdown(
+            None,
+            provider=getattr(telephony, "provider_name", None) or settings.TELEPHONY_PROVIDER,
+            notes=[
+                f"telephony_provider={getattr(telephony, 'provider_name', None) or settings.TELEPHONY_PROVIDER}",
+                f"voice_runtime={settings.VOICE_RUNTIME}",
+            ],
+        ),
+    )
+    db.add(call)
+    await db.flush()
+    await db.commit()
+
     outbound_urls = telephony.build_urls(resume_id=resume.id)
     outbound = telephony.start_outbound_call(
         to_number=to_number,
@@ -223,27 +246,19 @@ async def start_call(
         recording_callback_url=outbound_urls.recording_callback_url,
     )
 
-    call = Call(
-        resume_id=resume.id,
-        job_id=job.id,
+    call.provider = outbound.provider
+    call.provider_call_id = outbound.call_sid
+    call.twilio_call_sid = outbound.call_sid if outbound.provider == "twilio" else None
+    call.status = outbound.status
+    call.cost_breakdown = merge_cost_breakdown(
+        call.cost_breakdown,
         provider=outbound.provider,
-        voice_runtime=settings.VOICE_RUNTIME,
-        provider_call_id=outbound.call_sid,
-        twilio_call_sid=outbound.call_sid if outbound.provider == "twilio" else None,
-        status=outbound.status,
-        phone_number=to_number,
-        latency_metrics=append_latency_marker(None, key="call_requested_at"),
-        cost_breakdown=merge_cost_breakdown(
-            None,
-            provider=outbound.provider,
-            notes=[
-                f"telephony_provider={outbound.provider}",
-                f"voice_runtime={settings.VOICE_RUNTIME}",
-            ],
-        ),
+        notes=[
+            f"telephony_provider={outbound.provider}",
+            f"voice_runtime={settings.VOICE_RUNTIME}",
+        ],
     )
-    db.add(call)
-    await db.flush()
+    await db.commit()
     from sqlalchemy.orm import selectinload
     await db.refresh(call)
     

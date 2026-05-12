@@ -187,10 +187,8 @@ async def exotel_voice_webhook(resume_id: str, request: Request):
     # Small delay to ensure any parallel API cache operations finish
     await asyncio.sleep(0.2)
     
-    # DEFINITIVE FORMAT FROM EXOTEL VOICEBOT DOCS:
-    # { "url": "wss://..." }
-    public_url = "deadline-enjoy-generally-sorry.trycloudflare.com"
-    stream_url = f"wss://{public_url}/ws/exotel-media/voice/{resume_id}"
+    public_url = settings.PUBLIC_URL.rstrip("/")
+    stream_url = f"{public_url.replace('https://', 'wss://').replace('http://', 'ws://')}/ws/exotel-media/voice/{resume_id}"
     
     response_payload = {
         "url": stream_url

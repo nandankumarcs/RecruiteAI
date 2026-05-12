@@ -10,6 +10,7 @@ import uuid
 
 import websockets
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 from langsmith import traceable
 from openai import AsyncOpenAI
 import httpx
@@ -328,7 +329,8 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         sys.stderr.flush()
         if not self.api_key or not self.deepgram_api_key:
             log_debug("ERROR: Missing API keys")
-            await websocket.accept()
+            if websocket.application_state == WebSocketState.CONNECTING:
+                await websocket.accept()
             await websocket.close(code=1011, reason="Voice runtime is not fully configured.")
             return
 
@@ -343,11 +345,11 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         state = ConversationState()
 
         try:
-            if websocket.client_state.name == "CONNECTING":
+            if websocket.application_state == WebSocketState.CONNECTING:
                 await websocket.accept()
                 log_debug("Websocket accepted")
             else:
-                log_debug(f"Websocket already in state: {websocket.client_state.name}")
+                log_debug(f"Websocket already in state: {websocket.application_state.name}")
         except Exception as e:
             log_debug(f"ERROR: websocket.accept failed: {e}")
             raise
