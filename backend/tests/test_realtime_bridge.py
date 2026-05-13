@@ -36,13 +36,12 @@ def test_realtime_bridge_instructions_include_grounding_rules():
         parsed_data={"summary": "RAG engineer", "skills": ["Python", "FastAPI", "FAISS"]},
     )
     questions = [
-        InterviewQuestion(
-            id=uuid.uuid4(),
-            job_id=job.id,
-            resume_id=resume.id,
-            question_text="Tell me about your RAG experience.",
-            category="technical",
-            difficulty=3,
+            InterviewQuestion(
+                id=uuid.uuid4(),
+                job_id=job.id,
+                question_text="Tell me about your RAG experience.",
+                category="technical",
+                difficulty=3,
             order_index=1,
         )
     ]
@@ -107,6 +106,73 @@ def test_realtime_bridge_detects_end_of_call_script():
     assert not RealtimeBridge._should_end_call(
         "Could you tell me more about your experience with FastAPI?"
     )
+
+
+def test_clean_assistant_spoken_text_removes_role_prefixes():
+    assert (
+        RealtimeBridge._clean_assistant_spoken_text(
+            "Assistant: Recruiter: Could you tell me about your Python experience?"
+        )
+        == "Could you tell me about your Python experience?"
+    )
+    assert (
+        RealtimeBridge._clean_assistant_spoken_text("RecruiteAI assistant: Hello there.")
+        == "Hello there."
+    )
+
+
+def test_initial_consent_prompt_is_deterministic():
+    bridge = RealtimeBridge()
+    job = Job(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        title="AI Engineer",
+        description="Build AI recruiting systems.",
+        requirements="Python, FastAPI, LLMs",
+        status="active",
+    )
+    resume = Resume(
+        id=uuid.uuid4(),
+        job_id=job.id,
+        candidate_name="Sarthak Sharma",
+        phone_number="+91-1111111111",
+        email="sarthak@example.com",
+        file_path="/tmp/resume.pdf",
+        file_type="pdf",
+    )
+
+    prompt = bridge._build_initial_consent_prompt(resume=resume, job=job)
+
+    assert prompt.startswith("Hi Sarthak,")
+    assert "AI Engineer role" in prompt
+    assert "short screening" in prompt
+
+
+def test_candidate_turn_fast_analysis_skips_obvious_llm_classification():
+    consent = RealtimeBridge._analyze_candidate_turn_fast(
+        "Yes, please continue.",
+        ConversationState(consent_prompt_delivered=True),
+    )
+    termination = RealtimeBridge._analyze_candidate_turn_fast(
+        "I am not interested, please disconnect.",
+        ConversationState(consent_prompt_delivered=True),
+    )
+    clarification = RealtimeBridge._analyze_candidate_turn_fast(
+        "Can you repeat the question?",
+        ConversationState(consent_granted=True),
+    )
+    needs_llm = RealtimeBridge._analyze_candidate_turn_fast(
+        "I worked on a FastAPI service for two years.",
+        ConversationState(consent_granted=True),
+    )
+
+    assert consent and consent.grant_consent is True
+    assert termination and termination.request_termination is True
+    assert clarification
+    assert clarification.grant_consent is False
+    assert clarification.request_termination is False
+    assert clarification.off_topic_request is False
+    assert needs_llm is None
 
 
 @pytest.mark.asyncio

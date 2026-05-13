@@ -134,6 +134,19 @@ class RealtimeBridge:
                 # We return None for call to avoid DB persistence issues in mock mode
                 return mock_resume, mock_job, mock_questions, None
 
+    @staticmethod
+    def _candidate_first_name(resume: Resume) -> str:
+        name = (resume.candidate_name or "there").strip()
+        return name.split()[0] if name else "there"
+
+    def _build_initial_consent_prompt(self, *, resume: Resume, job: Job) -> str:
+        first_name = self._candidate_first_name(resume)
+        title = (job.title or "the role").strip()
+        return (
+            f"Hi {first_name}, this is the RecruiteAI assistant calling about the {title} role. "
+            "Is this a good time to continue with a short screening?"
+        )
+
     def _build_instructions(
         self,
         *,
@@ -189,6 +202,19 @@ class RealtimeBridge:
     def _clean_message_text(content: str | None) -> str:
         return (content or "").strip()
 
+    @classmethod
+    def _clean_assistant_spoken_text(cls, content: str | None) -> str:
+        text = cls._clean_message_text(content)
+        labels = ("assistant:", "recruiter:", "ai recruiter:", "recruiteai assistant:")
+        while True:
+            lowered = text.lower()
+            for label in labels:
+                if lowered.startswith(label):
+                    text = text[len(label):].strip()
+                    break
+            else:
+                return text
+
     @staticmethod
     def _should_end_call(content: str) -> bool:
         lowered = content.lower()
@@ -213,6 +239,10 @@ class RealtimeBridge:
         cleaned = self._clean_message_text(transcript)
         if not cleaned or self._analysis_client is None:
             return CandidateTurnAnalysis()
+
+        heuristic = self._analyze_candidate_turn_fast(cleaned, state)
+        if heuristic is not None:
+            return heuristic
 
         try:
             completion = await self._analysis_client.chat.completions.create(
@@ -258,6 +288,83 @@ class RealtimeBridge:
         except Exception:
             logger.exception("Failed to analyze candidate turn; defaulting to neutral interpretation.")
             return CandidateTurnAnalysis()
+
+    @classmethod
+    def _analyze_candidate_turn_fast(
+        cls,
+        transcript: str,
+        state: ConversationState,
+    ) -> CandidateTurnAnalysis | None:
+        text = cls._normalize_text(transcript)
+        if not text:
+            return CandidateTurnAnalysis()
+        text_for_match = f" {text} "
+        for punctuation in (".", ",", "!", "?", ";", ":"):
+            text_for_match = text_for_match.replace(punctuation, " ")
+        text_for_match = " ".join(text_for_match.split())
+        text_for_match = f" {text_for_match} "
+
+        termination_phrases = (
+            "not interested",
+            "don't call",
+            "do not call",
+            "stop calling",
+            "disconnect",
+            "hang up",
+            "end the call",
+            "cut the call",
+            "remove my number",
+            "call me later",
+            "busy right now",
+            "not a good time",
+        )
+        if any(phrase in text for phrase in termination_phrases):
+            return CandidateTurnAnalysis(request_termination=True)
+
+        off_topic_phrases = (
+            "tell me a joke",
+            "sing a song",
+            "write a poem",
+            "tell me a story",
+            "play music",
+        )
+        if any(phrase in text for phrase in off_topic_phrases):
+            return CandidateTurnAnalysis(off_topic_request=True)
+
+        if state.consent_prompt_delivered and not state.consent_granted:
+            consent_phrases = (
+                "yes",
+                "yeah",
+                "yep",
+                "sure",
+                "okay",
+                "ok",
+                "go ahead",
+                "continue",
+                "i agree",
+                "i consent",
+                "good time",
+                "you can continue",
+                "please continue",
+            )
+            if text.strip(".,!?;:") in consent_phrases or any(
+                f" {phrase} " in text_for_match for phrase in consent_phrases
+            ):
+                return CandidateTurnAnalysis(grant_consent=True)
+
+        clarification_phrases = (
+            "who is this",
+            "can you repeat",
+            "please repeat",
+            "what role",
+            "which company",
+            "i did not understand",
+            "i didn't understand",
+        )
+        if any(phrase in text for phrase in clarification_phrases):
+            return CandidateTurnAnalysis()
+
+        return None
 
     @classmethod
     def _looks_like_incomplete_assistant_fragment(cls, content: str) -> bool:

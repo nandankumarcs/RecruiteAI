@@ -126,7 +126,7 @@ class ExotelTelephonyProvider:
         payload = {
             "From": clean_number,  # The Customer
             "CallerId": settings.EXOTEL_PHONE_NUMBER, # The ExoPhone
-            "Url": "http://my.exotel.com/crownstack1/exoml/start_voice/1244328",
+            "Url": settings.EXOTEL_FLOW_URL,
             "CustomField": resume_id,
             "StatusCallback": status_callback_url,
             "Record": "true",

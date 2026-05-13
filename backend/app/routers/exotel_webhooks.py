@@ -7,11 +7,11 @@ from __future__ import annotations
 import logging
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import Response, JSONResponse
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.database import get_db
+from app.database import async_session_factory, get_db
 from app.models.call import Call
 from app.services.telephony import get_telephony_service
 
@@ -152,6 +152,20 @@ async def exotel_media_stream(websocket: WebSocket, resume_id: str):
             cached_id = get_cached_resume_id()
             if cached_id:
                 resume_id = cached_id
+
+        # 4. Last-resort dev fallback for Exotel flow URLs that arrive without
+        # our UUID in the WebSocket path after a server reload clears memory cache.
+        if not uuid_pattern.match(resume_id):
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(Call.resume_id)
+                    .where(Call.provider == "exotel")
+                    .order_by(desc(Call.created_at))
+                    .limit(1)
+                )
+                latest_resume_id = result.scalar_one_or_none()
+                if latest_resume_id:
+                    resume_id = str(latest_resume_id)
 
     sys.stderr.write(f"DEBUG: Final Resolved resume_id: {resume_id}\n")
     sys.stderr.flush()

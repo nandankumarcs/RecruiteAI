@@ -141,8 +141,13 @@ app.include_router(twilio_webhooks.router)
 app.include_router(exotel_webhooks.router)
 
 @app.get("/healhttps{path:path}")
-async def healhttps_fallback(path: str):
+async def healhttps_fallback(path: str, request: Request):
     logger.info(f"Intercepted mangled Exotel URL: /healhttps{path}")
+    params = dict(request.query_params)
+    call_sid = params.get("CallSid")
+    custom_field = params.get("CustomField")
+    if call_sid and custom_field and custom_field not in ["{{CustomField}}", ""]:
+        cache_exotel_call(call_sid, custom_field)
     return {"status": "ok"}
 
 
