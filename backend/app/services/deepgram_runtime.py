@@ -26,9 +26,10 @@ from app.services.observability import append_latency_marker, summarize_text_mod
 from app.services.pricing import (
     _safe_float,
     estimate_deepgram_stt_cost,
-    estimate_deepgram_tts_cost,
+    estimate_tts_cost,
     merge_cost_breakdown,
 )
+from app.services.tts_providers import get_tts_provider
 
 from app.services.realtime_bridge import ConversationState, RealtimeBridge
 
@@ -47,6 +48,12 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         self._current_tts_task: asyncio.Task | None = None
         self._assistant_audio_active = False
         self._pending_barge_in = False
+        self._tts_provider = get_tts_provider()
+        self._tts_fallback_provider = None
+        # Initialize fallback if using Sarvam
+        if settings.TTS_PROVIDER.lower() == "sarvam":
+            from app.services.tts_providers import DeepgramTTSProvider
+            self._tts_fallback_provider = DeepgramTTSProvider()
 
     async def _load_call_transcript(self, call_id: uuid.UUID) -> str:
         async with self._session_factory()() as session:
@@ -147,7 +154,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                 },
             ],
         )
-        content = (completion.choices[0].message.content or "").strip()
+        content = self._clean_assistant_spoken_text(completion.choices[0].message.content)
         usage = {
             "input_tokens": getattr(completion.usage, "prompt_tokens", 0),
             "output_tokens": getattr(completion.usage, "completion_tokens", 0),
@@ -176,114 +183,216 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         call_id: uuid.UUID | None,
     ) -> None:
         tts_run_id = str(uuid.uuid4())[:8]
+        text = self._clean_assistant_spoken_text(text)
+        if not text:
+            return
         log_debug(f"[{tts_run_id}] Starting TTS for text: {text[:50]}... (stream_id={stream_id})")
         self._assistant_audio_active = False
         self._pending_barge_in = False
-        if not self.deepgram_api_key:
-            log_debug(f"[{tts_run_id}] ERROR: Missing Deepgram API key for TTS")
-            return
+        tts_cost_recorded = False
 
-        encoding = "linear16" if provider == "exotel" else "mulaw"
-        tts_url = (
-            f"https://api.deepgram.com/v1/speak?model={settings.DEEPGRAM_TTS_MODEL}"
-            f"&encoding={encoding}&sample_rate=8000"
-        )
-        headers = {
-            "Authorization": f"Token {self.deepgram_api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        try:
-            if call_id:
-                log_debug(f"[{tts_run_id}] Updating call costs...")
-                await self._update_call_costs(
-                    call_id=call_id,
-                    tts_cost_usd=estimate_deepgram_tts_cost(characters=len(text)),
-                )
-
-            audio_chunks_sent = 0
-            log_debug(f"[{tts_run_id}] Requesting TTS from Deepgram REST...")
-
-            # Normalize smart quotes
-            text_to_speak = text.replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
-            log_debug(f"[{tts_run_id}] Requesting TTS for: {text_to_speak[:30]}...")
-
-            # NOTE: We intentionally use a subprocess for TTS.
-            # Multiple attempts showed that in-process HTTP calls to Deepgram's
-            # REST TTS can hang indefinitely when invoked from the Twilio media
-            # WebSocket handler. A subprocess isolates the network call and has
-            # proven reliable in local verification.
-            import os
-            import sys
-            from asyncio.subprocess import PIPE
-            import json as _json
-
-            env = os.environ.copy()
-            env["RECRUITEAI_TTS_URL"] = tts_url
-            env["RECRUITEAI_TTS_TOKEN"] = self.deepgram_api_key
-            env["RECRUITEAI_TTS_TEXT"] = text_to_speak
-
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-c",
-                (
-                    "import base64, json, os, requests\n"
-                    "url=os.environ['RECRUITEAI_TTS_URL']\n"
-                    "token=os.environ['RECRUITEAI_TTS_TOKEN']\n"
-                    "text=os.environ['RECRUITEAI_TTS_TEXT']\n"
-                    "r=requests.post(url, headers={'Authorization': f'Token {token}', 'Content-Type':'application/json'}, json={'text': text}, timeout=15)\n"
-                    "out={'status': r.status_code, 'audio_b64': base64.b64encode(r.content).decode('ascii')}\n"
-                    "print(json.dumps(out))\n"
-                ),
-                stdout=PIPE,
-                stderr=PIPE,
-                env=env,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=25)
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"TTS subprocess failed rc={proc.returncode}: {stderr.decode('utf-8', 'ignore')[:300]}"
-                )
-            result = _json.loads(stdout.decode("utf-8").strip() or "{}")
-            status_code = int(result.get("status", 0))
-            audio_bytes = base64.b64decode(result.get("audio_b64", "") or "")
-            log_debug(f"[{tts_run_id}] Response status: {status_code}  bytes: {len(audio_bytes)}")
-
-            if status_code != 200:
-                log_debug(f"[{tts_run_id}] Deepgram TTS Error: {status_code} - {audio_bytes[:200]}")
+        async def record_tts_cost(provider_name: str) -> None:
+            nonlocal tts_cost_recorded
+            if not call_id or tts_cost_recorded:
                 return
+            log_debug(f"[{tts_run_id}] Updating call costs for {provider_name} TTS...")
+            await self._update_call_costs(
+                call_id=call_id,
+                tts_cost_usd=estimate_tts_cost(
+                    provider=provider_name,
+                    characters=len(text),
+                ),
+            )
+            tts_cost_recorded = True
 
-            log_debug(f"[{tts_run_id}] Sending {len(audio_bytes)} audio bytes in chunks...")
-            chunk_size = 1600 if provider == "exotel" else 400
-            sleep_time = 0.095 if provider == "exotel" else 0.045
-            for i in range(0, len(audio_bytes), chunk_size):
-                chunk = audio_bytes[i : i + chunk_size]
-                if not chunk:
-                    continue
-                payload = base64.b64encode(chunk).decode("ascii")
-                if call_id and audio_chunks_sent == 0:
-                    await self._mark_first_assistant_audio(call_id)
-                if audio_chunks_sent == 0:
-                    self._assistant_audio_active = True
-                try:
-                    event_payload = self._build_audio_event(
-                        provider=provider,
-                        stream_id=stream_id,
-                        payload=payload,
+        def audio_frame_settings() -> tuple[int, float]:
+            if provider == "exotel":
+                # 20 ms of 8 kHz signed 16-bit mono PCM.
+                return 320, 0.020
+            # 20 ms of 8 kHz mu-law.
+            return 160, 0.020
+
+        async def reset_primary_tts_stream() -> None:
+            reset_stream = getattr(self._tts_provider, "reset_stream", None)
+            if reset_stream:
+                await reset_stream()
+
+        async def send_audio_payload(payload: str) -> bool:
+            if websocket.application_state != WebSocketState.CONNECTED:
+                log_debug(
+                    f"[{tts_run_id}] Websocket is {websocket.application_state.name}; stopping TTS send"
+                )
+                return False
+            try:
+                event_payload = self._build_audio_event(
+                    provider=provider,
+                    stream_id=stream_id,
+                    payload=payload,
+                )
+                await websocket.send_json(event_payload)
+                return True
+            except Exception as e:
+                log_debug(f"[{tts_run_id}] Error sending to websocket: {e}")
+                return False
+
+        try:
+            audio_chunks_sent = 0
+            send_failed = False
+            log_debug(
+                f"[{tts_run_id}] Requesting TTS from {self._tts_provider.provider_name} "
+                f"(streaming={self._tts_provider.supports_streaming})..."
+            )
+
+            # Use streaming if provider supports it
+            use_streaming = getattr(self._tts_provider, "supports_streaming", False)
+
+            try:
+                if use_streaming:
+                    # STREAMING MODE: Send audio chunks as they arrive
+                    log_debug(f"[{tts_run_id}] Using streaming mode for progressive audio delivery")
+                    chunk_size, sleep_time = audio_frame_settings()
+
+                    # Buffer to accumulate small chunks before sending
+                    buffer = bytearray()
+
+                    async for audio_chunk in self._tts_provider.synthesize_stream(
+                        text=text,
+                        telephony_provider=provider,
+                    ):
+                        if send_failed:
+                            break
+                        if not audio_chunk:
+                            continue
+
+                        # Add to buffer
+                        buffer.extend(audio_chunk)
+
+                        # Send buffered data in appropriate chunk sizes
+                        while len(buffer) >= chunk_size:
+                            chunk_to_send = bytes(buffer[:chunk_size])
+                            buffer = buffer[chunk_size:]
+
+                            payload = base64.b64encode(chunk_to_send).decode("ascii")
+
+                            if call_id and audio_chunks_sent == 0:
+                                await record_tts_cost(self._tts_provider.provider_name)
+                                await self._mark_first_assistant_audio(call_id)
+                            if audio_chunks_sent == 0:
+                                self._assistant_audio_active = True
+                                log_debug(f"[{tts_run_id}] First audio chunk sent (streaming)")
+
+                            if not await send_audio_payload(payload):
+                                send_failed = True
+                                break
+                            audio_chunks_sent += 1
+                            await asyncio.sleep(sleep_time)
+
+                    # Send remaining buffer
+                    if buffer and not send_failed:
+                        payload = base64.b64encode(bytes(buffer)).decode("ascii")
+                        if call_id and audio_chunks_sent == 0:
+                            await record_tts_cost(self._tts_provider.provider_name)
+                            await self._mark_first_assistant_audio(call_id)
+                        if audio_chunks_sent == 0:
+                            self._assistant_audio_active = True
+                        if await send_audio_payload(payload):
+                            audio_chunks_sent += 1
+                        else:
+                            send_failed = True
+
+                    log_debug(
+                        f"[{tts_run_id}] Streaming TTS complete. Sent {audio_chunks_sent} chunks."
                     )
-                    await websocket.send_json(event_payload)
-                    audio_chunks_sent += 1
-                    # Pacing: 1600 bytes ≈ 100 ms of 8 kHz L16, 400 bytes ≈ 50 ms of 8 kHz µ-law
-                    await asyncio.sleep(sleep_time)
-                except Exception as e:
-                    log_debug(f"[{tts_run_id}] Error sending to websocket: {e}")
-                    break
-            log_debug(f"[{tts_run_id}] TTS complete. Sent {audio_chunks_sent} chunks.")
+                    if send_failed:
+                        await reset_primary_tts_stream()
+
+                else:
+                    # NON-STREAMING MODE: Wait for complete audio then send
+                    log_debug(f"[{tts_run_id}] Using non-streaming mode (legacy)")
+                    audio_bytes = await self._tts_provider.synthesize(
+                        text=text,
+                        telephony_provider=provider,
+                    )
+                    log_debug(
+                        f"[{tts_run_id}] {self._tts_provider.provider_name} TTS success: {len(audio_bytes)} bytes"
+                    )
+
+                    if not audio_bytes:
+                        log_debug(f"[{tts_run_id}] No audio bytes generated")
+                        return
+
+                    log_debug(f"[{tts_run_id}] Sending {len(audio_bytes)} audio bytes in chunks...")
+                    chunk_size, sleep_time = audio_frame_settings()
+
+                    for i in range(0, len(audio_bytes), chunk_size):
+                        chunk = audio_bytes[i : i + chunk_size]
+                        if not chunk:
+                            continue
+                        payload = base64.b64encode(chunk).decode("ascii")
+
+                        if call_id and audio_chunks_sent == 0:
+                            await record_tts_cost(self._tts_provider.provider_name)
+                            await self._mark_first_assistant_audio(call_id)
+                        if audio_chunks_sent == 0:
+                            self._assistant_audio_active = True
+
+                        if not await send_audio_payload(payload):
+                            break
+                        audio_chunks_sent += 1
+                        await asyncio.sleep(sleep_time)
+
+                    log_debug(f"[{tts_run_id}] TTS complete. Sent {audio_chunks_sent} chunks.")
+
+            except Exception as e:
+                log_debug(
+                    f"[{tts_run_id}] {self._tts_provider.provider_name} TTS failed: {e}"
+                )
+                # Try fallback if available
+                if self._tts_fallback_provider:
+                    log_debug(
+                        f"[{tts_run_id}] Falling back to {self._tts_fallback_provider.provider_name}..."
+                    )
+                    try:
+                        audio_bytes = await self._tts_fallback_provider.synthesize(
+                            text=text,
+                            telephony_provider=provider,
+                        )
+                        log_debug(
+                            f"[{tts_run_id}] Fallback TTS success: {len(audio_bytes)} bytes"
+                        )
+
+                        # Send fallback audio
+                        chunk_size, sleep_time = audio_frame_settings()
+
+                        for i in range(0, len(audio_bytes), chunk_size):
+                            chunk = audio_bytes[i : i + chunk_size]
+                            if not chunk:
+                                continue
+                            payload = base64.b64encode(chunk).decode("ascii")
+
+                            if call_id and audio_chunks_sent == 0:
+                                await record_tts_cost(self._tts_fallback_provider.provider_name)
+                                await self._mark_first_assistant_audio(call_id)
+                            if audio_chunks_sent == 0:
+                                self._assistant_audio_active = True
+
+                            if not await send_audio_payload(payload):
+                                break
+                            audio_chunks_sent += 1
+                            await asyncio.sleep(sleep_time)
+
+                    except Exception as fallback_error:
+                        log_debug(f"[{tts_run_id}] Fallback TTS also failed: {fallback_error}")
+                        raise
+                else:
+                    raise
+
             self._assistant_audio_active = False
             self._pending_barge_in = False
 
         except asyncio.CancelledError:
             log_debug(f"[{tts_run_id}] TTS cancelled")
+            await reset_primary_tts_stream()
             self._assistant_audio_active = False
             self._pending_barge_in = False
             raise
@@ -534,13 +643,21 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         data = json.loads(payload)
                         event = data.get("event")
                         
-                        if event in ["start", "connected"]:
+                        if event == "connected":
+                            log_debug(f"Event CONNECTED received: call_id={call_id}")
+                            continue
+
+                        if event == "start":
                             log_debug(f"Event {event.upper()} received: call_id={call_id}")
                             stream_id = self._extract_stream_id(data)
                             provider_call_id = self._extract_provider_call_id(
                                 provider=provider,
                                 payload=data,
                             ) or provider_call_id
+
+                            if not stream_id:
+                                log_debug("Exotel start event did not include stream id; deferring opener.")
+                                continue
                             
                             if call_id:
                                 await self._update_call_started(call_id, provider, provider_call_id)
@@ -554,13 +671,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                 
                                 # Check if we already sent the opener to avoid double greeting
                                 if not hasattr(state, "opener_sent"):
-                                    log_debug(f"Generating opener for call_id={call_id}...")
-                                    opener = await self._generate_next_turn(
-                                        call_id=call_id,
+                                    opener = self._build_initial_consent_prompt(
                                         resume=resume,
                                         job=job,
-                                        questions=questions,
-                                        state=state,
                                     )
                                     log_debug(f"Opener generated: {opener[:50]}...")
                                     if opener:
@@ -592,6 +705,12 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                 await asyncio.sleep(0)
                         elif event == "stop":
                             log_debug(f"Event STOP received for call_id={call_id}")
+                            if self._current_tts_task and not self._current_tts_task.done():
+                                self._current_tts_task.cancel()
+                                try:
+                                    await self._current_tts_task
+                                except asyncio.CancelledError:
+                                    pass
                             break
                         elif event == "dtmf":
                             log_debug(f"DTMF received: {data.get('dtmf', {}).get('digit')}")

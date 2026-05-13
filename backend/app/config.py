@@ -48,6 +48,20 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_COST_PER_MINUTE_USD: float = 0.0043
     DEEPGRAM_TTS_COST_PER_1K_CHARS_USD: float = 0.03
 
+    # --- Sarvam ---
+    SARVAM_API_KEY: str = ""
+    SARVAM_TTS_MODEL: str = "bulbul:v3"
+    SARVAM_TTS_SPEAKER: str = "priya"
+    SARVAM_TTS_LANGUAGE: str = "en-IN"
+    SARVAM_TTS_SAMPLE_RATE: int = 8000
+    SARVAM_TTS_CODEC: str = "linear16"
+    SARVAM_TTS_TRANSPORT: str = "websocket"  # websocket, http
+    SARVAM_TTS_USE_HTTP_STREAM: bool = True
+    SARVAM_TTS_WEBSOCKET_URL: str = "wss://api.sarvam.ai/text-to-speech/ws"
+    SARVAM_TTS_FIRST_BYTE_TIMEOUT_SECONDS: float = 2.0
+    SARVAM_TTS_COMPLETION_TIMEOUT_SECONDS: float = 15.0
+    SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS: float = 30.0
+
     # --- Twilio Telephony ---
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
@@ -61,6 +75,7 @@ class Settings(BaseSettings):
     EXOTEL_API_TOKEN: str = ""
     EXOTEL_PHONE_NUMBER: str = ""
     EXOTEL_SUBDOMAIN: str = "api.exotel.com"
+    EXOTEL_FLOW_URL: str = "http://my.exotel.com/crownstack1/exoml/start_voice/1244328"
     EXOTEL_ESTIMATED_COST_PER_MINUTE_USD: float = 0.005
     EXOTEL_VALIDATE_SIGNATURES: bool = False
 
@@ -68,6 +83,7 @@ class Settings(BaseSettings):
     TELEPHONY_PROVIDER: str = "twilio"  # twilio, exotel, mock
     VOICE_RUNTIME: str = "openai_realtime"  # openai_realtime, deepgram_openai
     PIPELINE_REASONING_PROVIDER: str = "openai"
+    TTS_PROVIDER: str = "deepgram"  # deepgram, sarvam
 
 
     # --- LangSmith ---

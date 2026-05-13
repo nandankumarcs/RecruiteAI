@@ -64,6 +64,28 @@ def estimate_deepgram_tts_cost(*, characters: int | None) -> float:
     return _round_currency((chars / 1000.0) * settings.DEEPGRAM_TTS_COST_PER_1K_CHARS_USD)
 
 
+def estimate_sarvam_tts_cost(*, characters: int | None) -> float:
+    """
+    Estimate Sarvam TTS cost in USD.
+    Sarvam pricing is in INR, converted to USD at approximate rate.
+    """
+    chars = _safe_float(characters)
+    # Sarvam: ₹30 per 10K chars for bulbul:v3
+    # Approximate conversion: ₹1 = $0.012 USD (adjust as needed)
+    inr_cost = (chars / 10_000.0) * settings.SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS
+    usd_cost = inr_cost * 0.012  # INR to USD conversion
+    return _round_currency(usd_cost)
+
+
+def estimate_tts_cost(*, provider: str, characters: int | None) -> float:
+    """Estimate TTS cost based on provider."""
+    provider_lower = (provider or "deepgram").lower()
+    if provider_lower == "sarvam":
+        return estimate_sarvam_tts_cost(characters=characters)
+    else:
+        return estimate_deepgram_tts_cost(characters=characters)
+
+
 def estimate_telephony_cost(*, provider: str, duration_seconds: int | None) -> float:
     minutes = _safe_float(duration_seconds) / 60.0
     rate = 0.0
