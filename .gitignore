@@ -43,3 +43,23 @@ SBCV.pdf
 dummy_resume.pdf
 backend/app/debug_log.py
 *.deepgram.json
+
+# AI / tool artifacts
+.kiro/
+.claude/
+nginx/
+artifacts/
+test_resumes/
+docs/
+
+# Temp markdown artifacts
+BROWSER_TEST_GUIDE.md
+FEATURES.md
+MANUAL_TEST_RESULTS.md
+TASK_*.md
+backend/TASK_*.md
+backend/check_*.py
+backend/create_test_user.py
+backend/manual_test_*.py
+backend/test_*.py
+backend/place_test_call.py
