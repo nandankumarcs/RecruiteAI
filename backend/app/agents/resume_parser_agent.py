@@ -836,6 +836,9 @@ class ResumeParserAgent:
         self, resume_text: str, jd_text: str
     ) -> CandidateMatch:
         """Evaluate a candidate's resume against a Job Description."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if not self._ranking_llm:
             return CandidateMatch(
                 matching_score=50.0,
@@ -852,45 +855,21 @@ class ResumeParserAgent:
 
         try:
             result = await self._ranking_llm.ainvoke(prompt)
-            summarize_text_model_usage(result)
+            # The result is a dict with 'parsed' and 'raw' keys when using with_structured_output(include_raw=True)
+            if isinstance(result, dict) and "parsed" in result:
+                parsed_match = result["parsed"]
+                # Log usage if available
+                if "raw" in result:
+                    summarize_text_model_usage(result["raw"])
+                return parsed_match
+            # Fallback if result is already the parsed object
             return result
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error evaluating candidate: {e}", exc_info=True)
             return CandidateMatch(
                 matching_score=0.0,
-                explanation="An error occurred during candidate evaluation.",
+                explanation=f"An error occurred during candidate evaluation: {str(e)}",
             )
-        if self._structured_llm is None:
-            return fallback
-
-        prompt = (
-            "Extract structured candidate information from the resume text below. "
-            "Preserve structure rigorously. "
-            "Return: summary, flat skills, categorized skills, structured experience "
-            "(role_title/company_name/location/from_date/to_date/employment_type/tasks_performed, "
-            "while keeping equivalent title/company/start_date/end_date/bullets fields aligned), structured projects "
-            "(name/technologies/bullets/links), education, certifications, and visible links. "
-            "Do not omit sections that are present in the resume. "
-            "If a field is unknown, leave it empty instead of inventing data.\n\n"
-            f"Resume text:\n{raw_text[:16000]}"
-        )
-
-        try:
-            result = await self._structured_llm.ainvoke(prompt)
-            parsed = result.get("parsed") if isinstance(result, dict) else None
-            raw = result.get("raw") if isinstance(result, dict) else None
-            if raw is not None:
-                summarize_text_model_usage(
-                    agent_name="resume_parser",
-                    model=settings.OPENAI_TEXT_MODEL or settings.OPENAI_MODEL,
-                    usage=getattr(raw, "usage_metadata", None),
-                    metadata={"has_links": "linkedin" in raw_text.lower() or "github" in raw_text.lower()},
-                )
-            if parsed is None:
-                return fallback
-            normalized_primary = self.normalize_structured_data(parsed, raw_text)
-            return self.merge_structured_data(normalized_primary, fallback)
-        except Exception:
-            return fallback
 
     async def parse_resume(self, file_path: str, file_type: str) -> dict:
         """Parse a saved resume file into API-ready fields."""

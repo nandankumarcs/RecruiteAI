@@ -28,6 +28,25 @@ export function QuestionManager({ jobId }: QuestionManagerProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [newQuestionText, setNewQuestionText] = useState("");
 
+  const handleReorder = async (newOrder: Question[]) => {
+    setQuestions(newOrder);
+    
+    // Update order_index for each question based on new position
+    try {
+      const updates = newOrder.map((question, index) => ({
+        id: question.id,
+        order_index: index,
+      }));
+      
+      // Batch update the order in the backend
+      await api.patch(`/jobs/${jobId}/questions/reorder`, { questions: updates });
+    } catch (error) {
+      console.error("Failed to update question order", error);
+      // Silently fail - the visual order is already updated
+      // If needed, we could revert the order here
+    }
+  };
+
   const fetchQuestions = async () => {
     try {
       setIsLoading(true);
@@ -185,8 +204,8 @@ export function QuestionManager({ jobId }: QuestionManagerProps) {
             </div>
           ) : (
             <div className="space-y-4">
-              <Reorder.Group axis="y" values={questions} onReorder={setQuestions} className="space-y-4">
-                {questions.map((question) => (
+              <Reorder.Group axis="y" values={questions} onReorder={handleReorder} className="space-y-4">
+                {questions.map((question, index) => (
                   <Reorder.Item 
                     key={question.id} 
                     value={question}
@@ -198,7 +217,7 @@ export function QuestionManager({ jobId }: QuestionManagerProps) {
                     <div className="flex-grow space-y-2">
                       <div className="flex items-center gap-2">
                          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-[10px] font-black text-primary">
-                          {question.order_index + 1}
+                          {index + 1}
                         </span>
                         <Badge variant="secondary" className="text-[10px] font-bold uppercase tracking-widest px-2 py-0">
                           {question.category}
@@ -219,9 +238,6 @@ export function QuestionManager({ jobId }: QuestionManagerProps) {
                   </Reorder.Item>
                 ))}
               </Reorder.Group>
-              <p className="text-xs font-bold text-muted-foreground/50 uppercase tracking-widest text-center pt-4">
-                Tip: Drag handles to reorder your interview flow
-              </p>
             </div>
           )}
         </CardContent>

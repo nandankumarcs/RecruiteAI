@@ -99,6 +99,12 @@
   h1, h2, h3, h4, h5, h6 {
     @apply font-display tracking-tight font-black;
   }
+  button, a, [role="button"], [role="tab"], [role="link"] {
+    @apply cursor-pointer;
+  }
+  button:disabled, a:disabled, [role="button"]:disabled {
+    @apply cursor-not-allowed;
+  }
 }
 
 @layer utilities {

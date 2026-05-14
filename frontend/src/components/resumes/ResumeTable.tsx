@@ -57,7 +57,7 @@ export function ResumeTable({
 
   if (resumes.length === 0) {
     return (
-      <div className="rounded-lg border-2 border-dashed border-border/40 bg-card/20 py-16 text-center animate-in fade-in zoom-in duration-500">
+      <div className="rounded-lg border border-border/40 bg-card/20 py-16 text-center animate-in fade-in zoom-in duration-500">
         <div className="mx-auto w-16 h-16 bg-muted/50 rounded-full flex items-center justify-center mb-4">
           <FileText className="h-8 w-8 text-muted-foreground/40" />
         </div>

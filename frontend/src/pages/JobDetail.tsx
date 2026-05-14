@@ -176,10 +176,6 @@ export function JobDetail() {
                 <Calendar className="h-3.5 w-3.5" />
                 POSTED {new Date(job.created_at).toLocaleDateString()}
               </Badge>
-              <Badge variant="secondary" className="px-3 py-1 rounded-lg font-bold flex items-center gap-2">
-                <MapPin className="h-3.5 w-3.5" />
-                REMOTE
-              </Badge>
               <Badge variant="outline" className={`px-3 py-1 rounded-lg font-black uppercase tracking-tight ${
                 job.status === 'active' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-amber-500/10 text-amber-500 border-amber-500/20'
               }`}>
