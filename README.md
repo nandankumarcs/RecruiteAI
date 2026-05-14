@@ -75,6 +75,16 @@ Key backend values:
 - `PUBLIC_URL`
 - `FRONTEND_URL`
 
+### Resume Processing Session Management
+
+The resume upload progress streaming feature uses the following configuration:
+
+- `RESUME_SESSION_TTL_HOURS` (default: 1) - How long to keep inactive processing sessions before cleanup
+- `RESUME_SESSION_CLEANUP_INTERVAL_MINUTES` (default: 5) - How often to run the session cleanup task
+- `SSE_KEEPALIVE_INTERVAL_SECONDS` (default: 15) - How often to send keepalive events on SSE connections
+
+These settings control the lifecycle of resume processing sessions and Server-Sent Events (SSE) connections used for real-time progress streaming.
+
 ## Running in Mock Call Mode
 
 For local product development without placing real phone calls:
