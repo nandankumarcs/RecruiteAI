@@ -1,24 +1,18 @@
 import { useEffect, useMemo, useState } from "react"
-import { Eye, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react"
+import { Briefcase, Calendar, Eye, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import { useNavigate, Link } from "react-router-dom"
 
 import { api } from "@/lib/api"
 import type { Job, JobStatus } from "@/lib/jobs"
 import { Button } from "@/components/ui/button"
+import { DataTable } from "@/components/ui/DataTable"
+import type { ColumnDef } from "@/components/ui/DataTable"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -29,10 +23,108 @@ import {
 } from "@/components/ui/select"
 import { DeleteConfirmDialog } from "@/components/ui/DeleteConfirmDialog"
 import { Badge } from "@/components/ui/badge"
-import { Calendar, Briefcase } from "lucide-react"
 import { JobDialog } from "@/components/jobs/JobDialog"
 import { useToast } from "@/context/ToastContext"
 
+
+function jobColumns(
+  navigate: (path: string) => void,
+  openEditDialog: (job: Job) => void,
+  setJobToDelete: (job: Job) => void,
+): ColumnDef<Job>[] {
+  return [
+    {
+      key: "title",
+      label: "Job Title",
+      sortKey: "title",
+      className: "py-6 px-6",
+      headerClassName: "py-6 px-6",
+      cell: (job) => (
+        <Link
+          to={`/jobs/${job.id}`}
+          className="font-black tracking-tight text-lg hover:text-primary transition-colors"
+        >
+          {job.title}
+        </Link>
+      ),
+    },
+    {
+      key: "status",
+      label: "Status",
+      sortKey: "status",
+      className: "py-6",
+      headerClassName: "py-6",
+      cell: (job) => (
+        <Badge
+          variant="outline"
+          className={`font-black tracking-tight uppercase px-3 py-1 rounded-lg shadow-sm ${
+            job.status === "active"
+              ? "bg-emerald-500/15 text-emerald-500 border-emerald-500/20"
+              : job.status === "paused"
+              ? "bg-amber-500/15 text-amber-500 border-amber-500/20"
+              : "bg-slate-500/15 text-slate-500 border-slate-500/20"
+          }`}
+        >
+          {job.status}
+        </Badge>
+      ),
+    },
+    {
+      key: "requirements",
+      label: "Requirements",
+      className: "max-w-xs truncate text-muted-foreground font-medium py-6",
+      headerClassName: "py-6",
+      cell: (job) => job.requirements || "No requirements added",
+    },
+    {
+      key: "created",
+      label: "Created",
+      sortKey: "created_at",
+      className: "text-muted-foreground font-medium py-6",
+      headerClassName: "py-6",
+      cell: (job) => (
+        <div className="flex items-center gap-2">
+          <Calendar className="h-4 w-4" />
+          {new Date(job.created_at).toLocaleDateString()}
+        </div>
+      ),
+    },
+    {
+      key: "actions",
+      label: "Actions",
+      headerClassName: "text-right py-6 px-6",
+      className: "text-right py-6 px-6",
+      cell: (job) => (
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="secondary"
+            size="icon-sm"
+            className="rounded-lg shadow-sm border-border/50"
+            onClick={() => navigate(`/jobs/${job.id}`)}
+          >
+            <Eye className="size-4" />
+          </Button>
+          <Button
+            variant="secondary"
+            size="icon-sm"
+            className="rounded-lg shadow-sm border-border/50"
+            onClick={() => openEditDialog(job)}
+          >
+            <Pencil className="size-4" />
+          </Button>
+          <Button
+            variant="destructive"
+            size="icon-sm"
+            className="rounded-lg shadow-sm shadow-destructive/10"
+            onClick={() => setJobToDelete(job)}
+          >
+            <Trash2 className="size-4" />
+          </Button>
+        </div>
+      ),
+    },
+  ]
+}
 
 export function Jobs() {
   const { toast } = useToast()
@@ -46,6 +138,10 @@ export function Jobs() {
   const [query, setQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | JobStatus>("all")
   const [jobToDelete, setJobToDelete] = useState<Job | null>(null)
+  const [sortBy, setSortBy] = useState("created_at")
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc")
+  const [currentPage, setCurrentPage] = useState(1)
+  const PAGE_SIZE = 20
 
   const fetchJobs = async () => {
     try {
@@ -66,16 +162,34 @@ export function Jobs() {
   }, [])
 
   const filteredJobs = useMemo(() => {
-    return jobs.filter((job) => {
+    const filtered = jobs.filter((job) => {
       const matchesQuery =
         job.title.toLowerCase().includes(query.toLowerCase()) ||
         job.description.toLowerCase().includes(query.toLowerCase())
-      const matchesStatus =
-        statusFilter === "all" ? true : job.status === statusFilter
-
+      const matchesStatus = statusFilter === "all" || job.status === statusFilter
       return matchesQuery && matchesStatus
     })
-  }, [jobs, query, statusFilter])
+
+    filtered.sort((a, b) => {
+      const aVal = a[sortBy as keyof Job] ?? ""
+      const bVal = b[sortBy as keyof Job] ?? ""
+      const cmp = String(aVal).localeCompare(String(bVal))
+      return sortOrder === "asc" ? cmp : -cmp
+    })
+
+    return filtered
+  }, [jobs, query, statusFilter, sortBy, sortOrder])
+
+  const pagedJobs = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE
+    return filteredJobs.slice(start, start + PAGE_SIZE)
+  }, [filteredJobs, currentPage])
+
+  const handleSortChange = (newSortBy: string, newSortOrder: "asc" | "desc") => {
+    setSortBy(newSortBy)
+    setSortOrder(newSortOrder)
+    setCurrentPage(1)
+  }
 
   const openCreateDialog = () => {
     setIsCreateDialogOpen(true)
@@ -125,14 +239,14 @@ export function Jobs() {
             <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => { setQuery(event.target.value); setCurrentPage(1) }}
               placeholder="Search jobs"
               className="pl-9"
             />
           </div>
           <Select
             value={statusFilter}
-            onValueChange={(value: "all" | JobStatus) => setStatusFilter(value)}
+            onValueChange={(value: "all" | JobStatus) => { setStatusFilter(value); setCurrentPage(1) }}
           >
             <SelectTrigger className="w-full sm:w-40">
               <SelectValue placeholder="Filter status" />
@@ -163,112 +277,34 @@ export function Jobs() {
         </div>
       ) : null}
 
-      <div className="hidden md:block rounded-lg border border-border/40 bg-card/40 backdrop-blur-xl overflow-hidden shadow-md">
-        <Table>
-          <TableHeader className="bg-muted/50 border-b border-border/40">
-            <TableRow className="hover:bg-transparent">
-              <TableHead className="font-bold text-foreground py-6 px-6">JOB TITLE</TableHead>
-              <TableHead className="font-bold text-foreground py-6">STATUS</TableHead>
-              <TableHead className="font-bold text-foreground py-6">REQUIREMENTS</TableHead>
-              <TableHead className="font-bold text-foreground py-6">CREATED</TableHead>
-              <TableHead className="text-right font-bold text-foreground py-6 px-6">ACTIONS</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading ? (
-              <TableRow>
-                <TableCell colSpan={5} className="h-64 text-center">
-                  <div className="flex flex-col items-center justify-center gap-3">
-                    <div className="h-10 w-10 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
-                    <p className="text-muted-foreground font-medium animate-pulse">Loading jobs...</p>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ) : filteredJobs.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={5} className="h-64 text-center">
-                  <div className="flex flex-col items-center justify-center gap-4">
-                    <div className="p-4 bg-muted/50 rounded-full">
-                      <Briefcase className="h-8 w-8 text-muted-foreground" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-xl font-bold">No jobs found</p>
-                      <p className="text-muted-foreground">
-                        {jobs.length === 0
-                          ? "Create your first job to start receiving resumes."
-                          : "Try adjusting your search or filters."}
-                      </p>
-                    </div>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ) : (
-              filteredJobs.map((job) => (
-                <TableRow key={job.id} className="hover:bg-primary/5 group border-b border-border/40 last:border-0">
-                  <TableCell className="font-black tracking-tight text-lg py-6 px-6">
-                    <Link 
-                      to={`/jobs/${job.id}`}
-                      className="hover:text-primary transition-colors cursor-pointer"
-                    >
-                      {job.title}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="py-6">
-                    <Badge
-                      variant="outline"
-                      className={`font-black tracking-tight uppercase px-3 py-1 rounded-lg shadow-sm ${
-                        job.status === "active" ? "bg-emerald-500/15 text-emerald-500 border-emerald-500/20" :
-                        job.status === "paused" ? "bg-amber-500/15 text-amber-500 border-amber-500/20" :
-                        "bg-slate-500/15 text-slate-500 border-slate-500/20"
-                      }`}
-                    >
-                      {job.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="max-w-xs truncate text-muted-foreground font-medium py-6">
-                    {job.requirements || "No requirements added"}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground font-medium py-6">
-                    <div className="flex items-center gap-2">
-                      <Calendar className="h-4 w-4" />
-                      {new Date(job.created_at).toLocaleDateString()}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right py-6 px-6 relative">
-                    <div className="flex items-center justify-end">
-                      <div className="flex items-center gap-2">
-                        <Button 
-                          variant="secondary" 
-                          size="icon-sm" 
-                          className="rounded-lg shadow-sm border-border/50"
-                          onClick={() => navigate(`/jobs/${job.id}`)}
-                        >
-                          <Eye className="size-4" />
-                        </Button>
-                        <Button 
-                          variant="secondary" 
-                          size="icon-sm" 
-                          className="rounded-lg shadow-sm border-border/50"
-                          onClick={() => openEditDialog(job)}
-                        >
-                          <Pencil className="size-4" />
-                        </Button>
-                        <Button 
-                          variant="destructive" 
-                          size="icon-sm" 
-                          className="rounded-lg shadow-sm shadow-destructive/10"
-                          onClick={() => setJobToDelete(job)}
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+      {/* Desktop Table View */}
+      <div className="hidden md:block">
+        {loading ? (
+          <div className="rounded-lg border border-border/40 bg-card/40 h-64 flex flex-col items-center justify-center gap-3">
+            <div className="h-10 w-10 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
+            <p className="text-muted-foreground font-medium animate-pulse">Loading jobs...</p>
+          </div>
+        ) : (
+          <DataTable<Job>
+            columns={jobColumns(navigate, openEditDialog, setJobToDelete)}
+            data={pagedJobs}
+            rowKey={(j) => j.id}
+            sortBy={sortBy}
+            sortOrder={sortOrder}
+            onSortChange={handleSortChange}
+            currentPage={currentPage}
+            pageSize={PAGE_SIZE}
+            totalItems={filteredJobs.length}
+            onPageChange={setCurrentPage}
+            emptyIcon={<Briefcase className="h-8 w-8 text-muted-foreground" />}
+            emptyTitle="No jobs found"
+            emptyDescription={
+              jobs.length === 0
+                ? "Create your first job to start receiving resumes."
+                : "Try adjusting your search or filters."
+            }
+          />
+        )}
       </div>
 
       {/* Mobile Grid View */}
