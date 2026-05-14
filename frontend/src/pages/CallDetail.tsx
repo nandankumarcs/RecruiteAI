@@ -6,6 +6,7 @@ import {
   DollarSign,
   Headphones,
   Loader2,
+  MessageSquare,
   PhoneCall,
   Radio,
   Sparkles,
@@ -14,7 +15,6 @@ import {
   PieChart as PieChartIcon,
   BarChart as BarChartIcon,
   Activity,
-  ExternalLink,
 } from "lucide-react";
 
 import {
@@ -44,10 +44,14 @@ import { useToast } from "@/context/ToastContext";
 
 interface CallEvaluation extends Record<string, unknown> {
   schema_version: string;
-  overall_score: number;
-  technical_score: number;
-  communication_score: number;
-  experience_score: number;
+  status: string;
+  confidence: string;
+  overall_score: number | null;
+  technical_score: number | null;
+  communication_score: number | null;
+  experience_score: number | null;
+  behavioral_score?: number | null;
+  behavioral_summary?: string | null;
   remarks: string;
   strengths: string[];
   weaknesses: string[];
@@ -61,25 +65,22 @@ interface TranscriptLine {
   timestamp?: string;
 }
 
-interface CallAnalytics {
-  turns: Array<{
-    start_time: string;
-    end_time: string;
-    latency_ms: number;
-    input_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
-    cost_usd: number;
-    name: string;
-    run_url: string | null;
-  }>;
+interface TurnData {
+  turn: number;
+  role: string;
+  words: number;
+  gap_ms: number | null;
+  content_preview: string;
+}
 
-  summary: {
-    total_latency_ms: number;
-    total_tokens: number;
-    total_cost_usd: number;
-    turn_count: number;
-  };
+interface TurnAnalysis {
+  turns: TurnData[];
+  assistant_turns: number;
+  candidate_turns: number;
+  avg_assistant_words: number;
+  avg_candidate_words: number;
+  avg_ai_response_ms: number | null;
+  avg_candidate_response_ms: number | null;
 }
 
 type CallDetailData = CallRecord;
@@ -90,6 +91,20 @@ const scoreItems = [
   { key: "communication_score", label: "Communication" },
   { key: "experience_score", label: "Experience" },
 ] as const;
+
+const nonScorableLabels: Record<string, string> = {
+  insufficient_data: "Insufficient Data",
+  candidate_disengaged: "Candidate Disengaged",
+  call_quality_issue: "Call Quality Issue",
+  completed_evaluation: "Completed",
+};
+
+const recommendationClasses: Record<string, string> = {
+  advance: "bg-emerald-500/10 text-emerald-700 border-emerald-500/20",
+  hold: "bg-amber-500/10 text-amber-700 border-amber-500/20",
+  reject: "bg-rose-500/10 text-rose-700 border-rose-500/20",
+  insufficient_data: "bg-slate-500/10 text-slate-700 border-slate-500/20",
+};
 
 function parseTranscript(transcript: string | null): TranscriptLine[] {
   if (!transcript) return [];
@@ -176,8 +191,6 @@ export function CallDetail() {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const [recordingLoading, setRecordingLoading] = useState(false);
-  const [analytics, setAnalytics] = useState<CallAnalytics | null>(null);
-  const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
 
   useEffect(() => {
@@ -205,23 +218,53 @@ export function CallDetail() {
     void fetchCall();
   }, [callId, toast]);
 
-  useEffect(() => {
-    if (!callId || call?.status !== "completed") return;
+  const turnAnalysis = useMemo((): TurnAnalysis | null => {
+    if (!call?.messages || call.messages.length < 2) return null;
 
-    const fetchAnalytics = async () => {
-      try {
-        setAnalyticsLoading(true);
-        const response = await api.get<CallAnalytics>(`/calls/${callId}/analytics`);
-        setAnalytics(response.data);
-      } catch (err) {
-        console.error("Failed to fetch call analytics", err);
-      } finally {
-        setAnalyticsLoading(false);
-      }
+    const sorted = [...call.messages].sort((a, b) => a.sequence_number - b.sequence_number);
+    const wordCount = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
+
+    const turns: TurnData[] = sorted.map((msg, i) => {
+      const prev = sorted[i - 1];
+      const gap_ms = prev
+        ? Date.parse(msg.created_at) - Date.parse(prev.created_at)
+        : null;
+      const role = msg.role === "assistant" ? "assistant" : "candidate";
+      return {
+        turn: i + 1,
+        role,
+        words: wordCount(msg.content),
+        gap_ms: gap_ms !== null && gap_ms >= 0 ? gap_ms : null,
+        content_preview: msg.content.slice(0, 60),
+      };
+    });
+
+    const assistantTurns = turns.filter((t) => t.role === "assistant");
+    const candidateTurns = turns.filter((t) => t.role === "candidate");
+
+    const avg = (nums: number[]) =>
+      nums.length ? Math.round(nums.reduce((a, b) => a + b, 0) / nums.length) : 0;
+
+    // AI response time: gap on assistant turns that follow a candidate turn
+    const aiResponseGaps = assistantTurns
+      .filter((t) => t.gap_ms !== null && sorted[t.turn - 2]?.role !== "assistant")
+      .map((t) => t.gap_ms!);
+
+    // Candidate response time: gap on candidate turns that follow an assistant turn
+    const candidateResponseGaps = candidateTurns
+      .filter((t) => t.gap_ms !== null && sorted[t.turn - 2]?.role === "assistant")
+      .map((t) => t.gap_ms!);
+
+    return {
+      turns,
+      assistant_turns: assistantTurns.length,
+      candidate_turns: candidateTurns.length,
+      avg_assistant_words: avg(assistantTurns.map((t) => t.words)),
+      avg_candidate_words: avg(candidateTurns.map((t) => t.words)),
+      avg_ai_response_ms: aiResponseGaps.length ? avg(aiResponseGaps) : null,
+      avg_candidate_response_ms: candidateResponseGaps.length ? avg(candidateResponseGaps) : null,
     };
-
-    void fetchAnalytics();
-  }, [callId, call?.status]);
+  }, [call?.messages]);
 
 
   useEffect(() => {
@@ -359,6 +402,7 @@ export function CallDetail() {
   }
 
   const evaluation = call.ai_evaluation as CallEvaluation | null;
+  const isScorableEvaluation = evaluation?.status === "completed_evaluation";
 
   return (
     <div className="space-y-6 pb-12">
@@ -615,114 +659,133 @@ export function CallDetail() {
           </Card>
 
           <Card className="border-border/50 bg-card/70">
-            <CardHeader className="flex flex-row items-center justify-between gap-4">
+            <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <BarChartIcon className="h-4 w-4 text-primary" />
                 Turn Analysis
               </CardTitle>
-              {analytics?.turns?.[0]?.run_url && (
-                <a 
-                  href={analytics.turns[0].run_url} 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center text-xs text-muted-foreground hover:text-primary transition-colors"
-                >
-                  <ExternalLink className="mr-1 h-3 w-3" />
-                  View Full Trace
-                </a>
-              )}
             </CardHeader>
 
             <CardContent>
-              {analyticsLoading ? (
-                <div className="flex h-48 items-center justify-center">
-                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              {!turnAnalysis ? (
+                <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-6 text-sm text-muted-foreground text-center">
+                  <MessageSquare className="mx-auto h-8 w-8 mb-2 opacity-20" />
+                  No conversation messages recorded for this call.
                 </div>
-              ) : analytics && analytics.turns.length > 0 ? (
+              ) : (
                 <div className="space-y-8">
+                  {/* Summary stat cards */}
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    {[
+                      { label: "AI Turns", value: turnAnalysis.assistant_turns, icon: <Cpu className="h-3.5 w-3.5" /> },
+                      { label: "Candidate Turns", value: turnAnalysis.candidate_turns, icon: <UserRound className="h-3.5 w-3.5" /> },
+                      { label: "Avg AI Words", value: turnAnalysis.avg_assistant_words, icon: <Activity className="h-3.5 w-3.5" /> },
+                      { label: "Avg Candidate Words", value: turnAnalysis.avg_candidate_words, icon: <MessageSquare className="h-3.5 w-3.5" /> },
+                    ].map(({ label, value, icon }) => (
+                      <div key={label} className="rounded-lg border border-border/40 bg-background/40 p-3 space-y-1">
+                        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                          {icon}{label}
+                        </div>
+                        <div className="text-xl font-black tracking-tight">{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Response time stats */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-lg border border-border/40 bg-background/40 p-3 space-y-1">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+                        <Timer className="h-3.5 w-3.5" />Avg AI Response Time
+                      </div>
+                      <div className="text-xl font-black tracking-tight">
+                        {turnAnalysis.avg_ai_response_ms !== null ? fmtMs(turnAnalysis.avg_ai_response_ms) : "—"}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border/40 bg-background/40 p-3 space-y-1">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+                        <Timer className="h-3.5 w-3.5" />Avg Candidate Response Time
+                      </div>
+                      <div className="text-xl font-black tracking-tight">
+                        {turnAnalysis.avg_candidate_response_ms !== null ? fmtMs(turnAnalysis.avg_candidate_response_ms) : "—"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Words per turn chart */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                      <MessageSquare className="h-4 w-4" />
+                      Words per Turn
+                    </div>
+                    <div className="h-[200px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={turnAnalysis.turns}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                          <XAxis dataKey="turn" tick={{ fontSize: 11 }} label={{ value: "Turn", position: "insideBottom", offset: -5 }} />
+                          <YAxis fontSize={12} />
+                          <Tooltip
+                            contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }}
+                            formatter={(value: number, _: string, entry: any) => [
+                              `${value} words`,
+                              entry.payload.role === "assistant" ? "AI" : "Candidate",
+                            ]}
+                            labelFormatter={(label) => `Turn ${label}`}
+                          />
+                          <Bar
+                            dataKey="words"
+                            radius={[4, 4, 0, 0]}
+                            fill="#8884d8"
+                          >
+                            {turnAnalysis.turns.map((t, i) => (
+                              <Cell key={i} fill={t.role === "assistant" ? "#8884d8" : "#82ca9d"} />
+                            ))}
+                          </Bar>
+                          <Legend
+                            verticalAlign="top"
+                            height={28}
+                            content={() => (
+                              <div className="flex items-center gap-4 justify-end text-xs text-muted-foreground pb-1">
+                                <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-[#8884d8]" />AI</span>
+                                <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-[#82ca9d]" />Candidate</span>
+                              </div>
+                            )}
+                          />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  {/* Response gap chart */}
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                       <Activity className="h-4 w-4" />
-                      Latency per Turn (ms)
+                      Response Time per Turn (ms)
                     </div>
                     <div className="h-[200px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={analytics.turns}>
+                        <BarChart data={turnAnalysis.turns.filter((t) => t.gap_ms !== null)}>
                           <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                          <XAxis 
-                            dataKey="start_time" 
-                            tick={false}
-                            label={{ value: 'Turn Sequence', position: 'insideBottom', offset: -5 }}
-                          />
-                          <YAxis fontSize={12} tickFormatter={(value) => `${value}ms`} />
+                          <XAxis dataKey="turn" tick={{ fontSize: 11 }} label={{ value: "Turn", position: "insideBottom", offset: -5 }} />
+                          <YAxis fontSize={12} tickFormatter={(v) => `${v}ms`} />
                           <Tooltip
-                            contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
-                            labelFormatter={(label) => new Date(label).toLocaleTimeString()}
+                            contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }}
+                            formatter={(value: number, _: string, entry: any) => [
+                              fmtMs(value),
+                              entry.payload.role === "assistant" ? "AI response time" : "Candidate response time",
+                            ]}
+                            labelFormatter={(label) => `Turn ${label}`}
                           />
-                          <Bar dataKey="latency_ms" fill="#8884d8" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="gap_ms" radius={[4, 4, 0, 0]}>
+                            {turnAnalysis.turns
+                              .filter((t) => t.gap_ms !== null)
+                              .map((t, i) => (
+                                <Cell key={i} fill={t.role === "assistant" ? "#8884d8" : "#82ca9d"} />
+                              ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
                   </div>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                      <DollarSign className="h-4 w-4" />
-                      Cost per Turn (USD)
-                    </div>
-                    <div className="h-[200px] w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={analytics.turns}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                          <XAxis 
-                            dataKey="start_time" 
-                            tick={false}
-                            label={{ value: 'Turn Sequence', position: 'insideBottom', offset: -5 }}
-                          />
-                          <YAxis fontSize={12} tickFormatter={(value) => `$${value.toFixed(4)}`} />
-                          <Tooltip
-                            contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
-                            labelFormatter={(label) => new Date(label).toLocaleTimeString()}
-                            formatter={(value: any) => [`$${Number(value).toFixed(6)}`, 'Cost']}
-                          />
-                          <Bar dataKey="cost_usd" fill="#82ca9d" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                      <Cpu className="h-4 w-4" />
-                      Tokens per Turn
-                    </div>
-                    <div className="h-[200px] w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={analytics.turns}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                          <XAxis 
-                            dataKey="start_time" 
-                            tick={false}
-                            label={{ value: 'Turn Sequence', position: 'insideBottom', offset: -5 }}
-                          />
-                          <YAxis fontSize={12} />
-                          <Tooltip
-                            contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
-                            labelFormatter={(label) => new Date(label).toLocaleTimeString()}
-                          />
-                          <Bar dataKey="input_tokens" name="Input" fill="#8884d8" stackId="a" />
-                          <Bar dataKey="output_tokens" name="Output" fill="#82ca9d" stackId="a" />
-                          <Legend verticalAlign="top" height={36}/>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-
-                <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-6 text-sm text-muted-foreground text-center">
-                  <Sparkles className="mx-auto h-8 w-8 mb-2 opacity-20" />
-                  Detailed turn analytics are being aggregated from LangSmith. 
-                  Check back in a few moments for the granular breakdown.
                 </div>
               )}
             </CardContent>
@@ -818,27 +881,57 @@ export function CallDetail() {
               <>
                 <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
                   <div className="text-sm text-muted-foreground">Recommendation</div>
-                  <div className="text-xl font-semibold capitalize">
-                    {evaluation.recommendation}
+                  <div className="mt-2 flex items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className={recommendationClasses[evaluation.recommendation] ?? recommendationClasses.insufficient_data}
+                    >
+                      {evaluation.recommendation.replaceAll("_", " ")}
+                    </Badge>
+                    <Badge variant="outline" className="border-border/60 text-muted-foreground">
+                      {nonScorableLabels[evaluation.status] ?? evaluation.status.replaceAll("_", " ")}
+                    </Badge>
+                    <Badge variant="outline" className="border-border/60 text-muted-foreground capitalize">
+                      {evaluation.confidence} confidence
+                    </Badge>
                   </div>
                 </div>
 
-                <div className="space-y-3">
-                  {scoreItems.map(({ key, label }) => (
-                    <div key={key} className="space-y-1">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">{label}</span>
-                        <span className="font-medium">{evaluation[key]}/10</span>
-                      </div>
-                      <div className="h-2 rounded-full bg-muted">
-                        <div
-                          className="h-2 rounded-full bg-primary"
-                          style={{ width: `${evaluation[key] * 10}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                {isScorableEvaluation ? (
+                  <div className="space-y-3">
+                    {scoreItems.map(({ key, label }) => {
+                      const score = evaluation[key];
+                      if (typeof score !== "number") return null;
+                      return (
+                        <div key={key} className="space-y-1">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="text-muted-foreground">{label}</span>
+                            <span className="font-medium">{score}/10</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-muted">
+                            <div
+                              className="h-2 rounded-full bg-primary"
+                              style={{ width: `${score * 10}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-4 text-sm text-muted-foreground">
+                    This call did not produce enough reliable evidence for a full scored evaluation.
+                  </div>
+                )}
+
+                {!isScorableEvaluation && evaluation.behavioral_summary ? (
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Why It Was Not Scored</div>
+                    <p className="text-sm leading-6 text-muted-foreground">
+                      {evaluation.behavioral_summary}
+                    </p>
+                  </div>
+                ) : null}
 
                 <div className="space-y-2">
                   <div className="text-sm font-medium">Remarks</div>
