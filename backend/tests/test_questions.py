@@ -21,7 +21,7 @@ from app.models.resume import Resume
 class FakeQuestionGeneratorAgent:
     """Deterministic question generator for endpoint tests."""
 
-    async def generate_questions(self, job: Job, resume: Resume) -> QuestionGenerationResult:
+    async def generate_questions(self, job: Job) -> QuestionGenerationResult:
         return QuestionGenerationResult(
             schema_version="questions.v1",
             questions=[
@@ -39,6 +39,7 @@ class FakeQuestionGeneratorAgent:
                 ),
             ],
         )
+
 
 
 @pytest_asyncio.fixture(autouse=True)

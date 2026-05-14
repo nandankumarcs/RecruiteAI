@@ -25,7 +25,7 @@ from app.services.telephony import OutboundCallResult, OutboundCallUrls, get_tel
 
 
 class FakeQuestionGeneratorAgent:
-    async def generate_questions(self, job: Job, resume: Resume) -> QuestionGenerationResult:
+    async def generate_questions(self, job: Job) -> QuestionGenerationResult:
         return QuestionGenerationResult(
             schema_version="questions.v1",
             questions=[
@@ -43,6 +43,7 @@ class FakeQuestionGeneratorAgent:
                 ),
             ],
         )
+
 
 
 class FakeTelephonyService:

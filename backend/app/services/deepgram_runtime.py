@@ -6,6 +6,8 @@ import asyncio
 import base64
 import json
 import logging
+from datetime import datetime, timezone
+from time import perf_counter
 import uuid
 
 import websockets
@@ -22,14 +24,23 @@ from app.debug_log import log_debug
 
 from app.config import get_settings
 from app.models.call import Call
-from app.services.observability import append_latency_marker, summarize_text_model_usage
+from app.services.observability import (
+    append_latency_marker,
+    increment_metric,
+    log_audio_source_event,
+    merge_latency_metric,
+    summarize_text_model_usage,
+)
+from app.services.prompt_audio_service import get_prompt_audio_service
 from app.services.pricing import (
     _safe_float,
     estimate_deepgram_stt_cost,
     estimate_tts_cost,
     merge_cost_breakdown,
 )
+from app.services.runtime_selection_layer import RuntimeSelectionLayer
 from app.services.tts_providers import get_tts_provider
+from app.services.filler_queue_manager import FillerQueueManager
 
 from app.services.realtime_bridge import ConversationState, RealtimeBridge
 
@@ -54,6 +65,12 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         if settings.TTS_PROVIDER.lower() == "sarvam":
             from app.services.tts_providers import DeepgramTTSProvider
             self._tts_fallback_provider = DeepgramTTSProvider()
+        self._storage = get_prompt_audio_service().storage
+        self._prompt_audio = get_prompt_audio_service()
+        self._filler_queue = FillerQueueManager(self._prompt_audio)
+        self.runtime_selection = RuntimeSelectionLayer(self._prompt_audio, self._filler_queue)
+        self._last_filler_played_at: datetime | None = None
+        self._last_filler_key: str | None = None
 
     async def _load_call_transcript(self, call_id: uuid.UUID) -> str:
         async with self._session_factory()() as session:
@@ -121,6 +138,230 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
             )
             await session.commit()
 
+    @staticmethod
+    def _audio_frame_settings(provider: str) -> tuple[int, float]:
+        if provider == "exotel":
+            return 320, 0.020
+        return 160, 0.020
+
+    async def _send_audio_payload(
+        self,
+        *,
+        websocket: WebSocket,
+        provider: str,
+        stream_id: str,
+        payload: str,
+        tts_run_id: str,
+    ) -> bool:
+        if websocket.application_state != WebSocketState.CONNECTED:
+            log_debug(
+                f"[{tts_run_id}] Websocket is {websocket.application_state.name}; stopping audio send"
+            )
+            return False
+        try:
+            event_payload = self._build_audio_event(
+                provider=provider,
+                stream_id=stream_id,
+                payload=payload,
+            )
+            await websocket.send_json(event_payload)
+            return True
+        except Exception as exc:
+            log_debug(f"[{tts_run_id}] Error sending to websocket: {exc}")
+            return False
+
+    async def _record_audio_turn_metrics(
+        self,
+        *,
+        call_id: uuid.UUID,
+        audio_source: str,
+        main_prompt_ready_after_ms: int | None = None,
+    ) -> None:
+        async with self._session_factory()() as session:
+            call = await session.get(Call, call_id)
+            if call is None:
+                return
+            metrics = call.latency_metrics or {}
+            if audio_source == "prebuilt_asset":
+                metrics = increment_metric(metrics, key="prebuilt_turn_count")
+            elif audio_source == "filler_asset":
+                metrics = increment_metric(metrics, key="filler_turn_count")
+            elif audio_source == "live_tts":
+                metrics = increment_metric(metrics, key="live_tts_turn_count")
+            elif audio_source == "live_tts_fallback":
+                metrics = increment_metric(metrics, key="live_tts_fallback_count")
+            if main_prompt_ready_after_ms is not None:
+                metrics = merge_latency_metric(
+                    metrics,
+                    key="last_main_prompt_ready_after_ms",
+                    value=main_prompt_ready_after_ms,
+                )
+            call.latency_metrics = metrics
+            await session.commit()
+
+    async def _play_audio_bytes(
+        self,
+        *,
+        websocket: WebSocket,
+        provider: str,
+        stream_id: str,
+        audio_bytes: bytes,
+        call_id: uuid.UUID | None,
+        tts_run_id: str,
+    ) -> None:
+        chunk_size, sleep_time = self._audio_frame_settings(provider)
+        audio_chunks_sent = 0
+        for offset in range(0, len(audio_bytes), chunk_size):
+            chunk = audio_bytes[offset : offset + chunk_size]
+            if not chunk:
+                continue
+            payload = base64.b64encode(chunk).decode("ascii")
+            if call_id and audio_chunks_sent == 0:
+                await self._mark_first_assistant_audio(call_id)
+            if audio_chunks_sent == 0:
+                self._assistant_audio_active = True
+                log_debug(f"[{tts_run_id}] First cached audio chunk sent")
+            if not await self._send_audio_payload(
+                websocket=websocket,
+                provider=provider,
+                stream_id=stream_id,
+                payload=payload,
+                tts_run_id=tts_run_id,
+            ):
+                break
+            audio_chunks_sent += 1
+            await asyncio.sleep(sleep_time)
+        self._assistant_audio_active = False
+        self._pending_barge_in = False
+
+    async def _play_cached_audio(
+        self,
+        *,
+        websocket: WebSocket,
+        provider: str,
+        stream_id: str,
+        asset,
+        call_id: uuid.UUID | None,
+    ) -> None:
+        tts_run_id = str(uuid.uuid4())[:8]
+        audio_bytes = await self._storage.get_file_content(asset.file_path)
+        await self._play_audio_bytes(
+            websocket=websocket,
+            provider=provider,
+            stream_id=stream_id,
+            audio_bytes=audio_bytes,
+            call_id=call_id,
+            tts_run_id=tts_run_id,
+        )
+
+    async def _play_assistant_turn(
+        self,
+        *,
+        websocket: WebSocket,
+        provider: str,
+        stream_id: str,
+        text: str,
+        call_id: uuid.UUID,
+        state: ConversationState,
+        job_id: uuid.UUID | None,
+        questions: list,
+    ) -> None:
+        lookup_started = perf_counter()
+        selection = await self.runtime_selection.select_audio_source(
+            assistant_text=text,
+            conversation_state=state,
+            job_id=job_id,
+            questions=questions,
+        )
+        asset_lookup_ms = int((perf_counter() - lookup_started) * 1000)
+        main_prompt_ready = selection.source_type == "prebuilt_asset" and selection.asset is not None
+        estimated_latency_ms = 0 if main_prompt_ready else 800
+
+        should_play_filler, filler_key = await self._filler_queue.should_play_filler(
+            estimated_latency_ms=estimated_latency_ms,
+            last_filler_played_at=self._last_filler_played_at,
+            main_prompt_ready=main_prompt_ready,
+            last_filler_key=self._last_filler_key,
+        )
+        filler_played = False
+        if should_play_filler and filler_key:
+            filler_asset = await self._filler_queue.get_filler_asset(filler_key)
+            if filler_asset is not None:
+                try:
+                    await self._play_cached_audio(
+                        websocket=websocket,
+                        provider=provider,
+                        stream_id=stream_id,
+                        asset=filler_asset,
+                        call_id=call_id,
+                    )
+                    filler_played = True
+                    self._last_filler_played_at = datetime.now(timezone.utc)
+                    self._last_filler_key = filler_key
+                    await self._record_audio_turn_metrics(
+                        call_id=call_id,
+                        audio_source="filler_asset",
+                    )
+                except Exception as exc:
+                    log_audio_source_event(
+                        call_id=str(call_id),
+                        audio_source="filler_asset",
+                        template_key=filler_key,
+                        asset_id=str(filler_asset.id),
+                        asset_lookup_ms=asset_lookup_ms,
+                        filler_played=False,
+                        filler_key=filler_key,
+                        main_prompt_ready_after_ms=estimated_latency_ms,
+                        error=str(exc),
+                    )
+
+        await self._record_audio_turn_metrics(
+            call_id=call_id,
+            audio_source=selection.source_type,
+            main_prompt_ready_after_ms=estimated_latency_ms,
+        )
+        log_audio_source_event(
+            call_id=str(call_id),
+            audio_source=selection.source_type,
+            template_key=selection.template_key,
+            asset_id=str(selection.asset.id) if selection.asset else None,
+            asset_lookup_ms=asset_lookup_ms,
+            filler_played=filler_played,
+            filler_key=filler_key if filler_played else None,
+            main_prompt_ready_after_ms=estimated_latency_ms,
+        )
+
+        if selection.source_type == "prebuilt_asset" and selection.asset is not None:
+            try:
+                await self._play_cached_audio(
+                    websocket=websocket,
+                    provider=provider,
+                    stream_id=stream_id,
+                    asset=selection.asset,
+                    call_id=call_id,
+                )
+                return
+            except Exception as exc:
+                log_audio_source_event(
+                    call_id=str(call_id),
+                    audio_source="live_tts_fallback",
+                    template_key=selection.template_key,
+                    asset_id=str(selection.asset.id),
+                    asset_lookup_ms=asset_lookup_ms,
+                    filler_played=filler_played,
+                    filler_key=filler_key if filler_played else None,
+                    main_prompt_ready_after_ms=estimated_latency_ms,
+                    error=str(exc),
+                )
+
+        await self._speak_text(
+            websocket=websocket,
+            provider=provider,
+            stream_id=stream_id,
+            text=selection.fallback_text or text,
+            call_id=call_id,
+        )
+
     @traceable(run_type="llm", name="voice_turn_generator")
     async def _generate_next_turn(
         self,
@@ -141,6 +382,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         completion = await self.openai_client.chat.completions.create(
             model=self.text_model,
             temperature=0.2,
+            max_tokens=48,
             messages=[
                 {"role": "system", "content": instructions},
                 {
@@ -155,6 +397,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
             ],
         )
         content = self._clean_assistant_spoken_text(completion.choices[0].message.content)
+        content = self._compress_assistant_spoken_text(content)
         usage = {
             "input_tokens": getattr(completion.usage, "prompt_tokens", 0),
             "output_tokens": getattr(completion.usage, "completion_tokens", 0),
@@ -205,35 +448,10 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
             )
             tts_cost_recorded = True
 
-        def audio_frame_settings() -> tuple[int, float]:
-            if provider == "exotel":
-                # 20 ms of 8 kHz signed 16-bit mono PCM.
-                return 320, 0.020
-            # 20 ms of 8 kHz mu-law.
-            return 160, 0.020
-
         async def reset_primary_tts_stream() -> None:
             reset_stream = getattr(self._tts_provider, "reset_stream", None)
             if reset_stream:
                 await reset_stream()
-
-        async def send_audio_payload(payload: str) -> bool:
-            if websocket.application_state != WebSocketState.CONNECTED:
-                log_debug(
-                    f"[{tts_run_id}] Websocket is {websocket.application_state.name}; stopping TTS send"
-                )
-                return False
-            try:
-                event_payload = self._build_audio_event(
-                    provider=provider,
-                    stream_id=stream_id,
-                    payload=payload,
-                )
-                await websocket.send_json(event_payload)
-                return True
-            except Exception as e:
-                log_debug(f"[{tts_run_id}] Error sending to websocket: {e}")
-                return False
 
         try:
             audio_chunks_sent = 0
@@ -250,28 +468,64 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                 if use_streaming:
                     # STREAMING MODE: Send audio chunks as they arrive
                     log_debug(f"[{tts_run_id}] Using streaming mode for progressive audio delivery")
-                    chunk_size, sleep_time = audio_frame_settings()
+                    chunk_size, sleep_time = self._audio_frame_settings(provider)
+                    prebuffer_chunks = max(
+                        1,
+                        int(settings.PIPELINE_TTS_JITTER_BUFFER_MS / (sleep_time * 1000)),
+                    )
+                    prebuffer_bytes = chunk_size * prebuffer_chunks
+                    log_debug(
+                        f"[{tts_run_id}] TTS jitter buffer target: "
+                        f"{settings.PIPELINE_TTS_JITTER_BUFFER_MS}ms ({prebuffer_bytes} bytes)"
+                    )
 
-                    # Buffer to accumulate small chunks before sending
+                    # Producer keeps reading TTS while the consumer paces audio
+                    # to the telephony websocket. This prevents playback from
+                    # outrunning Sarvam chunk delivery and creating mid-turn gaps.
+                    audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
                     buffer = bytearray()
+                    producer_error: BaseException | None = None
 
-                    async for audio_chunk in self._tts_provider.synthesize_stream(
-                        text=text,
-                        telephony_provider=provider,
-                    ):
-                        if send_failed:
-                            break
-                        if not audio_chunk:
-                            continue
+                    async def produce_audio() -> None:
+                        nonlocal producer_error
+                        try:
+                            async for audio_chunk in self._tts_provider.synthesize_stream(
+                                text=text,
+                                telephony_provider=provider,
+                            ):
+                                if audio_chunk:
+                                    await audio_queue.put(audio_chunk)
+                        except asyncio.CancelledError:
+                            raise
+                        except BaseException as e:
+                            producer_error = e
+                        finally:
+                            await audio_queue.put(None)
 
-                        # Add to buffer
-                        buffer.extend(audio_chunk)
+                    producer_task = asyncio.create_task(produce_audio())
 
-                        # Send buffered data in appropriate chunk sizes
-                        while len(buffer) >= chunk_size:
+                    try:
+                        producer_done = False
+                        while not send_failed:
+                            target_bytes = (
+                                prebuffer_bytes if audio_chunks_sent == 0 else chunk_size
+                            )
+                            while len(buffer) < target_bytes and not producer_done:
+                                audio_chunk = await audio_queue.get()
+                                if audio_chunk is None:
+                                    producer_done = True
+                                    break
+                                buffer.extend(audio_chunk)
+
+                            if producer_error and not buffer:
+                                raise producer_error
+                            if len(buffer) < chunk_size:
+                                if producer_done:
+                                    break
+                                continue
+
                             chunk_to_send = bytes(buffer[:chunk_size])
-                            buffer = buffer[chunk_size:]
-
+                            del buffer[:chunk_size]
                             payload = base64.b64encode(chunk_to_send).decode("ascii")
 
                             if call_id and audio_chunks_sent == 0:
@@ -281,24 +535,48 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                 self._assistant_audio_active = True
                                 log_debug(f"[{tts_run_id}] First audio chunk sent (streaming)")
 
-                            if not await send_audio_payload(payload):
+                            if not await self._send_audio_payload(
+                                websocket=websocket,
+                                provider=provider,
+                                stream_id=stream_id,
+                                payload=payload,
+                                tts_run_id=tts_run_id,
+                            ):
                                 send_failed = True
                                 break
                             audio_chunks_sent += 1
                             await asyncio.sleep(sleep_time)
 
-                    # Send remaining buffer
-                    if buffer and not send_failed:
-                        payload = base64.b64encode(bytes(buffer)).decode("ascii")
-                        if call_id and audio_chunks_sent == 0:
-                            await record_tts_cost(self._tts_provider.provider_name)
-                            await self._mark_first_assistant_audio(call_id)
-                        if audio_chunks_sent == 0:
-                            self._assistant_audio_active = True
-                        if await send_audio_payload(payload):
+                        # Send remaining buffer when generation is complete.
+                        while buffer and not send_failed:
+                            chunk_to_send = bytes(buffer[:chunk_size])
+                            del buffer[:chunk_size]
+                            payload = base64.b64encode(chunk_to_send).decode("ascii")
+                            if call_id and audio_chunks_sent == 0:
+                                await record_tts_cost(self._tts_provider.provider_name)
+                                await self._mark_first_assistant_audio(call_id)
+                            if audio_chunks_sent == 0:
+                                self._assistant_audio_active = True
+                                log_debug(f"[{tts_run_id}] First audio chunk sent (streaming)")
+                            if not await self._send_audio_payload(
+                                websocket=websocket,
+                                provider=provider,
+                                stream_id=stream_id,
+                                payload=payload,
+                                tts_run_id=tts_run_id,
+                            ):
+                                send_failed = True
+                                break
                             audio_chunks_sent += 1
-                        else:
-                            send_failed = True
+                            if buffer:
+                                await asyncio.sleep(sleep_time)
+                    finally:
+                        if not producer_task.done():
+                            producer_task.cancel()
+                            try:
+                                await producer_task
+                            except asyncio.CancelledError:
+                                pass
 
                     log_debug(
                         f"[{tts_run_id}] Streaming TTS complete. Sent {audio_chunks_sent} chunks."
@@ -322,7 +600,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         return
 
                     log_debug(f"[{tts_run_id}] Sending {len(audio_bytes)} audio bytes in chunks...")
-                    chunk_size, sleep_time = audio_frame_settings()
+                    chunk_size, sleep_time = self._audio_frame_settings(provider)
 
                     for i in range(0, len(audio_bytes), chunk_size):
                         chunk = audio_bytes[i : i + chunk_size]
@@ -336,7 +614,13 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         if audio_chunks_sent == 0:
                             self._assistant_audio_active = True
 
-                        if not await send_audio_payload(payload):
+                        if not await self._send_audio_payload(
+                            websocket=websocket,
+                            provider=provider,
+                            stream_id=stream_id,
+                            payload=payload,
+                            tts_run_id=tts_run_id,
+                        ):
                             break
                         audio_chunks_sent += 1
                         await asyncio.sleep(sleep_time)
@@ -362,7 +646,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         )
 
                         # Send fallback audio
-                        chunk_size, sleep_time = audio_frame_settings()
+                        chunk_size, sleep_time = self._audio_frame_settings(provider)
 
                         for i in range(0, len(audio_bytes), chunk_size):
                             chunk = audio_bytes[i : i + chunk_size]
@@ -376,7 +660,13 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             if audio_chunks_sent == 0:
                                 self._assistant_audio_active = True
 
-                            if not await send_audio_payload(payload):
+                            if not await self._send_audio_payload(
+                                websocket=websocket,
+                                provider=provider,
+                                stream_id=stream_id,
+                                payload=payload,
+                                tts_run_id=tts_run_id,
+                            ):
                                 break
                             audio_chunks_sent += 1
                             await asyncio.sleep(sleep_time)
@@ -411,6 +701,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         stream_id: str,
         text: str,
         call_id: uuid.UUID,
+        state: ConversationState,
+        job_id: uuid.UUID | None,
+        questions: list,
     ) -> None:
         if self._current_tts_task and not self._current_tts_task.done():
             self._current_tts_task.cancel()
@@ -423,12 +716,15 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                 pass
 
         self._current_tts_task = asyncio.create_task(
-            self._speak_text(
+            self._play_assistant_turn(
                 websocket=websocket,
                 provider=provider,
                 stream_id=stream_id,
                 text=text,
                 call_id=call_id,
+                state=state,
+                job_id=job_id,
+                questions=questions,
             )
         )
 
@@ -472,7 +768,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         stt_url = (
             f"wss://api.deepgram.com/v1/listen?model={settings.DEEPGRAM_STT_MODEL}"
             f"&encoding={encoding}&sample_rate=8000&interim_results=true"
-            "&vad_events=true&endpointing=300&utterance_end_ms=1000&punctuate=true&smart_format=true"
+            f"&vad_events=true&endpointing={settings.PIPELINE_STT_ENDPOINTING_MS}"
+            f"&utterance_end_ms={settings.PIPELINE_STT_UTTERANCE_END_MS}"
+            "&punctuate=true&smart_format=true"
         )
         stt_headers = {"Authorization": f"Token {self.deepgram_api_key}"}
 
@@ -558,6 +856,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             stream_id=stream_id or "",
                             text=response_text,
                             call_id=call_id,
+                            state=state,
+                            job_id=job.id if job else None,
+                            questions=questions,
                         )
 
                         if state_changed and self._should_end_call(response_text) and provider_call_id:
@@ -691,6 +992,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                             stream_id=stream_id or "",
                                             text=opener,
                                             call_id=call_id,
+                                            state=state,
+                                            job_id=job.id if job else None,
+                                            questions=questions,
                                         )
                                         state.opener_sent = True
                                 else:

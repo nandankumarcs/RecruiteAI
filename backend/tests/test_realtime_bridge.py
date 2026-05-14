@@ -121,6 +121,21 @@ def test_clean_assistant_spoken_text_removes_role_prefixes():
     )
 
 
+def test_compress_assistant_spoken_text_shortens_common_recruiter_question():
+    assert (
+        RealtimeBridge._compress_assistant_spoken_text(
+            "Great! Can you briefly introduce yourself and explain why you are interested in this Junior Software Engineer position?"
+        )
+        == "Tell me about yourself and why this role interests you."
+    )
+    assert (
+        RealtimeBridge._compress_assistant_spoken_text(
+            "It seems like you might need clarification. Can you briefly introduce yourself and explain why you are interested in this Junior Software Engineer position?"
+        )
+        == "I'm here. Tell me about yourself and why this role interests you."
+    )
+
+
 def test_initial_consent_prompt_is_deterministic():
     bridge = RealtimeBridge()
     job = Job(
@@ -143,9 +158,10 @@ def test_initial_consent_prompt_is_deterministic():
 
     prompt = bridge._build_initial_consent_prompt(resume=resume, job=job)
 
-    assert prompt.startswith("Hi Sarthak,")
-    assert "AI Engineer role" in prompt
-    assert "short screening" in prompt
+    assert prompt == (
+        "Hi Sarthak, this is RecruiteAI calling about your application. "
+        "Is now a good time for a short screening?"
+    )
 
 
 def test_candidate_turn_fast_analysis_skips_obvious_llm_classification():

@@ -55,12 +55,16 @@ class Settings(BaseSettings):
     SARVAM_TTS_LANGUAGE: str = "en-IN"
     SARVAM_TTS_SAMPLE_RATE: int = 8000
     SARVAM_TTS_CODEC: str = "linear16"
+    SARVAM_TTS_PACE: float = 1.2
     SARVAM_TTS_TRANSPORT: str = "websocket"  # websocket, http
     SARVAM_TTS_USE_HTTP_STREAM: bool = True
     SARVAM_TTS_WEBSOCKET_URL: str = "wss://api.sarvam.ai/text-to-speech/ws"
     SARVAM_TTS_FIRST_BYTE_TIMEOUT_SECONDS: float = 2.0
     SARVAM_TTS_COMPLETION_TIMEOUT_SECONDS: float = 15.0
     SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS: float = 30.0
+    PIPELINE_TTS_JITTER_BUFFER_MS: int = 200
+    PIPELINE_STT_ENDPOINTING_MS: int = 500
+    PIPELINE_STT_UTTERANCE_END_MS: int = 1000
 
     # --- Twilio Telephony ---
     TWILIO_ACCOUNT_SID: str = ""
@@ -104,6 +108,15 @@ class Settings(BaseSettings):
     BACKEND_PORT: int = 8000
     FRONTEND_URL: str = "http://localhost:5173"
     PUBLIC_URL: str = "http://localhost:8000"
+
+    # --- Resume Processing Session Management ---
+    RESUME_SESSION_TTL_HOURS: int = 1  # Session cleanup after inactivity (in hours)
+    RESUME_SESSION_CLEANUP_INTERVAL_MINUTES: int = 5  # How often to run cleanup task
+    SSE_KEEPALIVE_INTERVAL_SECONDS: int = 15  # SSE keepalive interval
+    RESUME_SESSION_TTL_SECONDS: int = 3600  # 1 hour - session cleanup after inactivity (deprecated, use RESUME_SESSION_TTL_HOURS)
+    RESUME_KEEPALIVE_INTERVAL_SECONDS: int = 15  # SSE keepalive interval (deprecated, use SSE_KEEPALIVE_INTERVAL_SECONDS)
+    RESUME_EVENT_QUEUE_SIZE: int = 1000  # Maximum events per session queue
+    RESUME_MAX_PER_SESSION: int = 100  # Maximum resumes per upload session
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

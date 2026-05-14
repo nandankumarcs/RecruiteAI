@@ -22,7 +22,8 @@ from app.models.job import Job
 from app.models.question import InterviewQuestion
 from app.models.user import User
 from app.schemas.job import JobCreate, JobResponse, JobUpdate
-from app.schemas.question import InterviewQuestionCreate, InterviewQuestionResponse, InterviewQuestionUpdate, GeneratedQuestionSetResponse
+from app.schemas.question import InterviewQuestionCreate, InterviewQuestionResponse, InterviewQuestionUpdate, GeneratedQuestionSetResponse, QuestionsReorderRequest
+from app.tasks.audio_generation import schedule_generate_question_audio_for_job
 from app.agents.question_generator_agent import QuestionGeneratorAgent, get_question_generator_agent
 
 
@@ -179,6 +180,8 @@ async def add_job_question(
     db.add(question)
     await db.flush()
     await db.refresh(question)
+    await db.commit()
+    schedule_generate_question_audio_for_job(job_id)
     return question
 
 
@@ -210,6 +213,8 @@ async def update_job_question(
 
     await db.flush()
     await db.refresh(question)
+    await db.commit()
+    schedule_generate_question_audio_for_job(job_id)
     return question
 
 
@@ -276,9 +281,41 @@ async def generate_job_questions(
     await db.flush()
     for question in stored_questions:
         await db.refresh(question)
+    await db.commit()
+    schedule_generate_question_audio_for_job(job_id)
 
     return GeneratedQuestionSetResponse(
         schema_version=generated.schema_version,
         questions=stored_questions,
     )
 
+
+@router.patch("/{job_id}/questions/reorder", status_code=204)
+async def reorder_job_questions(
+    job_id: uuid.UUID,
+    reorder_request: QuestionsReorderRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Batch update the order_index of multiple questions."""
+    # Verify job ownership
+    result = await db.execute(
+        select(Job).where(Job.id == job_id, Job.user_id == current_user.id)
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        raise NotFoundError(resource="Job")
+
+    # Update each question's order_index
+    for update in reorder_request.questions:
+        result = await db.execute(
+            select(InterviewQuestion).where(
+                InterviewQuestion.id == update.id,
+                InterviewQuestion.job_id == job_id,
+            )
+        )
+        question = result.scalar_one_or_none()
+        if question:
+            question.order_index = update.order_index
+
+    await db.commit()

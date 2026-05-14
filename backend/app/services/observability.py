@@ -68,3 +68,38 @@ def merge_latency_metric(existing: dict | None, *, key: str, value: Any) -> dict
 
 def append_latency_marker(existing: dict | None, *, key: str) -> dict:
     return merge_latency_metric(existing, key=key, value=utc_now_iso())
+
+
+def increment_metric(existing: dict | None, *, key: str, amount: int = 1) -> dict:
+    data = dict(existing or {})
+    data[key] = int(data.get(key, 0) or 0) + amount
+    return data
+
+
+def log_audio_source_event(
+    *,
+    call_id: str | None,
+    audio_source: str,
+    template_key: str | None = None,
+    asset_id: str | None = None,
+    asset_lookup_ms: int | None = None,
+    filler_played: bool = False,
+    filler_key: str | None = None,
+    main_prompt_ready_after_ms: int | None = None,
+    error: str | None = None,
+) -> dict:
+    payload = {
+        "event": "audio_source_selection",
+        "call_id": call_id,
+        "audio_source": audio_source,
+        "template_key": template_key,
+        "asset_id": asset_id,
+        "asset_lookup_ms": asset_lookup_ms,
+        "filler_played": filler_played,
+        "filler_key": filler_key,
+        "main_prompt_ready_after_ms": main_prompt_ready_after_ms,
+        "error": error,
+        "timestamp": utc_now_iso(),
+    }
+    logger.info("audio_source %s", payload)
+    return payload

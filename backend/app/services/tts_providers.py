@@ -168,6 +168,7 @@ class SarvamTTSProvider:
         self.language = settings.SARVAM_TTS_LANGUAGE
         self.sample_rate = settings.SARVAM_TTS_SAMPLE_RATE
         self.codec = settings.SARVAM_TTS_CODEC
+        self.pace = settings.SARVAM_TTS_PACE
         self.transport = settings.SARVAM_TTS_TRANSPORT.lower()
         self.ws_url = settings.SARVAM_TTS_WEBSOCKET_URL
         self.use_http_stream = settings.SARVAM_TTS_USE_HTTP_STREAM
@@ -259,7 +260,7 @@ class SarvamTTSProvider:
                         "target_language_code": self.language,
                         "speaker": self.speaker,
                         "model": self.model,
-                        "pace": 1.0,
+                        "pace": self.pace,
                         "speech_sample_rate": self.sample_rate,
                         "output_audio_codec": self.codec,
                         "enable_preprocessing": True,
@@ -339,9 +340,9 @@ class SarvamTTSProvider:
 
                     if message_type == "event":
                         event_type = (message.get("data") or {}).get("event_type")
-                        if event_type == "completion":
+                        if event_type in {"final", "completion"}:
                             break
-                    elif message_type == "completion":
+                    elif message_type in {"final", "completion"}:
                         break
                     elif message_type == "error":
                         raise RuntimeError(f"Sarvam websocket error: {raw_message}")
@@ -379,7 +380,7 @@ class SarvamTTSProvider:
             "model": self.model,
             "speech_sample_rate": self.sample_rate,
             "output_audio_codec": self.codec,
-            "pace": 1.0,
+            "pace": self.pace,
         }
 
         log_debug(f"[{tts_run_id}] Requesting Sarvam HTTP stream (progressive delivery)...")

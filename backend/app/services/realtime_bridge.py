@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 try:
     import audioop
@@ -141,10 +142,9 @@ class RealtimeBridge:
 
     def _build_initial_consent_prompt(self, *, resume: Resume, job: Job) -> str:
         first_name = self._candidate_first_name(resume)
-        title = (job.title or "the role").strip()
         return (
-            f"Hi {first_name}, this is the RecruiteAI assistant calling about the {title} role. "
-            "Is this a good time to continue with a short screening?"
+            f"Hi {first_name}, this is RecruiteAI calling about your application. "
+            "Is now a good time for a short screening?"
         )
 
     def _build_instructions(
@@ -181,6 +181,7 @@ class RealtimeBridge:
         return (
             "Persona: Warm, professional recruiter. Speak naturally and clearly.\n"
             "Process: Ask 1 question at a time. Wait for answer. Keep turns short. Do not invent details.\n"
+            "Voice constraints: Reply in one sentence, under 12 words, unless ending the call.\n"
             f"Role: {job.title} | Req: {job.requirements or job.description[:200]}\n"
             f"Candidate: {resume.candidate_name or 'Candidate'} | Skills: {skills}\n"
             f"Summary: {summary}\n\n"
@@ -189,7 +190,8 @@ class RealtimeBridge:
             "Critical Rules:\n"
             "- No consent = No interview questions.\n"
             "- If answer is too short (yes/ok), ask for details/restate question.\n"
-            "- If the candidate asks a clarifying or meta question, answer it briefly and then restate the current interview question.\n"
+            "- If the candidate says hello or asks if you are there, acknowledge once and repeat only the core question.\n"
+            "- If the candidate asks a clarifying or meta question, answer it briefly and then restate only the core question.\n"
             "- Treat clarification, confusion, or requests to repeat as continued engagement, not refusal or completion.\n"
             "- Decline non-interview requests (poems/stories/jokes) once, then hang up if they persist.\n"
             "- Do not end the call unless the candidate clearly refuses, asks to stop, or all interview questions are complete.\n"
@@ -214,6 +216,28 @@ class RealtimeBridge:
                     break
             else:
                 return text
+
+    @classmethod
+    def _compress_assistant_spoken_text(cls, content: str | None) -> str:
+        text = cls._clean_assistant_spoken_text(content)
+        lowered = text.lower()
+        asks_intro_and_interest = (
+            "introduce yourself" in lowered
+            and ("why you are interested" in lowered or "why this role interests" in lowered)
+        )
+        if asks_intro_and_interest:
+            if "clarification" in lowered or "confusion" in lowered or "hello" in lowered:
+                return "I'm here. Tell me about yourself and why this role interests you."
+            return "Tell me about yourself and why this role interests you."
+
+        words = text.split()
+        if len(words) <= 18:
+            return text
+
+        first_sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+        if first_sentence and len(first_sentence.split()) <= 18:
+            return first_sentence
+        return " ".join(words[:18]).rstrip(".,;:") + "."
 
     @staticmethod
     def _should_end_call(content: str) -> bool:

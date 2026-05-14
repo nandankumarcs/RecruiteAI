@@ -19,6 +19,15 @@ class InterviewQuestionUpdate(BaseModel):
     difficulty: int | None = None
     order_index: int | None = None
 
+class QuestionOrderUpdate(BaseModel):
+    """Schema for updating a single question's order."""
+    id: uuid.UUID
+    order_index: int
+
+class QuestionsReorderRequest(BaseModel):
+    """Schema for batch reordering questions."""
+    questions: list[QuestionOrderUpdate]
+
 class InterviewQuestionResponse(InterviewQuestionBase):
     """API response schema for a stored interview question."""
 
