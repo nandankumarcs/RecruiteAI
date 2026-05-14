@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/recruiteai"
 
     # --- Auth / JWT ---
-    SECRET_KEY: str = "recruiteai-super-secret-key-change-in-production-min-32-chars"
+    SECRET_KEY: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     EXOTEL_API_TOKEN: str = ""
     EXOTEL_PHONE_NUMBER: str = ""
     EXOTEL_SUBDOMAIN: str = "api.exotel.com"
-    EXOTEL_FLOW_URL: str = "http://my.exotel.com/crownstack1/exoml/start_voice/1244328"
+    EXOTEL_FLOW_URL: str = ""
     EXOTEL_ESTIMATED_COST_PER_MINUTE_USD: float = 0.005
     EXOTEL_VALIDATE_SIGNATURES: bool = False
 

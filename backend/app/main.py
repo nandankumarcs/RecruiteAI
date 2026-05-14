@@ -11,6 +11,7 @@ Configures the FastAPI app with:
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import sys
 import asyncio
@@ -119,7 +120,7 @@ app = FastAPI(
 )
 
 # Mount static files
-app.mount("/static", StaticFiles(directory="/Users/mac/RecruiteAI/backend/static"), name="static")
+app.mount("/static", StaticFiles(directory=Path(__file__).parent.parent / "static"), name="static")
 
 # --- CORS Middleware ---
 app.add_middleware(
