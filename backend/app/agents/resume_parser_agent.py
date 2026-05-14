@@ -827,7 +827,12 @@ class ResumeParserAgent:
             result = await self._structured_llm.ainvoke(
                 f"Parse this resume into structured JSON:\n\n{raw_text[:8000]}"
             )
-            summarize_text_model_usage(result)
+            summarize_text_model_usage(
+                agent_name="resume_parser",
+                model=settings.OPENAI_TEXT_MODEL or settings.OPENAI_MODEL,
+                usage=getattr(result, "usage_metadata", None),
+                metadata={"phase": "structured_parse"},
+            )
             return self.merge_structured_data(result, fallback)
         except Exception:
             return fallback
@@ -860,7 +865,12 @@ class ResumeParserAgent:
                 parsed_match = result["parsed"]
                 # Log usage if available
                 if "raw" in result:
-                    summarize_text_model_usage(result["raw"])
+                    summarize_text_model_usage(
+                        agent_name="candidate_ranker",
+                        model=settings.OPENAI_TEXT_MODEL or settings.OPENAI_MODEL,
+                        usage=getattr(result["raw"], "usage_metadata", None),
+                        metadata={"phase": "resume_vs_jd_rank"},
+                    )
                 return parsed_match
             # Fallback if result is already the parsed object
             return result
