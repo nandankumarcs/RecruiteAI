@@ -41,7 +41,6 @@ scratch/
 .playwright-mcp/
 SBCV.pdf
 dummy_resume.pdf
-backend/app/debug_log.py
 *.deepgram.json
 
 # AI / tool artifacts
