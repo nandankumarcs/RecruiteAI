@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import re
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -54,6 +55,14 @@ class RuntimeSelectionLayer:
     @staticmethod
     def _normalize_for_matching(text: str) -> str:
         return " ".join((text or "").lower().strip().split())
+
+    @classmethod
+    def _normalize_question_tokens(cls, text: str) -> str:
+        normalized = cls._normalize_for_matching(text)
+        normalized = re.sub(r"\([^)]*\)", " ", normalized)
+        normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
 
     def _classify_turn(
         self,
@@ -114,10 +123,14 @@ class RuntimeSelectionLayer:
                 "could you tell me more",
                 "can you elaborate",
                 "could you elaborate",
+                "could you please elaborate",
+                "explain that in more detail",
+                "explain each of",
                 "can you give me an example",
                 "could you give me an example",
                 "could you clarify",
                 "can you clarify",
+                "share your background",
             )
         )
 
@@ -135,6 +148,8 @@ class RuntimeSelectionLayer:
                 "did not hear that",
                 "pardon",
                 "sorry, what",
+                "i'm here",
+                "i am here",
             )
         )
 
@@ -151,12 +166,20 @@ class RuntimeSelectionLayer:
                 return "reprompt_example"
             if "clarify" in normalized:
                 return "reprompt_clarify"
+            if "background" in normalized and "excites" in normalized:
+                return "reprompt_background_interest"
+            if "detail" in normalized or "explain each" in normalized:
+                return "reprompt_detail"
             return "reprompt_elaborate"
         if category == PromptCategory.CLARIFICATION:
+            if "i'm here" in normalized or "i am here" in normalized:
+                return "clarification_im_here"
             if "tell me more" in normalized:
                 return "clarification_more"
             return "clarification_repeat"
         if category == PromptCategory.CLOSING:
+            if "goodbye" in normalized and "thank you for your time" in normalized:
+                return "closing_goodbye"
             if "we'll be in touch" in normalized or "we will be in touch" in normalized:
                 return "closing_next_steps"
             return "closing_thank_you"
@@ -168,9 +191,20 @@ class RuntimeSelectionLayer:
         questions: list[InterviewQuestion],
     ) -> InterviewQuestion | None:
         normalized_assistant = self._normalize_for_matching(assistant_text).rstrip(".?!")
+        normalized_assistant_tokens = self._normalize_question_tokens(assistant_text)
         for question in questions:
             normalized_question = self._normalize_for_matching(question.question_text).rstrip(".?!")
             if normalized_assistant == normalized_question:
+                return question
+            normalized_question_tokens = self._normalize_question_tokens(question.question_text)
+            if normalized_assistant_tokens and normalized_assistant_tokens == normalized_question_tokens:
+                return question
+            assistant_words = set(normalized_assistant_tokens.split())
+            question_words = set(normalized_question_tokens.split())
+            if not assistant_words or not question_words:
+                continue
+            overlap = len(assistant_words & question_words) / max(len(question_words), 1)
+            if overlap >= 0.8:
                 return question
         return None
 

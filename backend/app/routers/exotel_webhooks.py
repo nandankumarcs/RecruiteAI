@@ -4,6 +4,7 @@ Exotel webhooks router — maps Exotel's API formats into our internal structure
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import Response, JSONResponse
@@ -35,6 +36,49 @@ EXOTEL_STATUS_MAP = {
     "no-answer": "no_answer",
     "canceled": "failed",
 }
+
+
+def _coerce_duration_seconds(params: dict) -> int | None:
+    for key in ("RecordingDuration", "Duration", "CallDuration"):
+        value = params.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+async def _reconcile_exotel_recording(call_id, call_sid: str) -> None:
+    for attempt in range(3):
+        if attempt:
+            await asyncio.sleep(2 * attempt)
+
+        details = await asyncio.to_thread(get_telephony_service().fetch_call_details, call_sid)
+        if not details:
+            continue
+
+        call_payload = details.get("Call") or {}
+        recording_url = call_payload.get("RecordingUrl")
+        duration_seconds = _coerce_duration_seconds(call_payload)
+        if not recording_url:
+            continue
+
+        async with async_session_factory() as session:
+            call = await session.get(Call, call_id)
+            if call is None:
+                return
+            call.recording_url = recording_url
+            call.recording_path = recording_url
+            if duration_seconds is not None:
+                call.duration_seconds = duration_seconds
+            await session.commit()
+        logger.info(
+            "Backfilled Exotel recording metadata from call details",
+            extra={"call_id": str(call_id), "call_sid": call_sid, "attempt": attempt + 1},
+        )
+        return
 
 
 # Voice webhook moved to main.py temporarily for debugging
@@ -74,8 +118,22 @@ async def exotel_status_webhook(
     normalized_status = EXOTEL_STATUS_MAP.get(Status.lower(), call.status)
     call.status = normalized_status
     call.provider = "exotel"
+    recording_url = params.get("RecordingUrl")
+    if recording_url:
+        call.recording_url = recording_url
+        call.recording_path = recording_url
+
+    duration_seconds = _coerce_duration_seconds(params)
+    if duration_seconds is not None:
+        call.duration_seconds = duration_seconds
     
     await db.commit()
+    if (
+        normalized_status == "completed"
+        and not call.recording_url
+        and call.provider_call_id
+    ):
+        asyncio.create_task(_reconcile_exotel_recording(call.id, call.provider_call_id))
     return Response(status_code=204)
 
 
@@ -96,6 +154,7 @@ async def exotel_recording_webhook(
         return Response(status_code=204)
 
     call.recording_url = RecordingUrl
+    call.recording_path = RecordingUrl
     if RecordingDuration:
         try:
             call.duration_seconds = int(RecordingDuration)

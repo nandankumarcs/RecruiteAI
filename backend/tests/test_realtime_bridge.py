@@ -169,6 +169,10 @@ def test_candidate_turn_fast_analysis_skips_obvious_llm_classification():
         "Yes, please continue.",
         ConversationState(consent_prompt_delivered=True),
     )
+    goodbye = RealtimeBridge._analyze_candidate_turn_fast(
+        "Bye.",
+        ConversationState(consent_granted=True),
+    )
     termination = RealtimeBridge._analyze_candidate_turn_fast(
         "I am not interested, please disconnect.",
         ConversationState(consent_prompt_delivered=True),
@@ -183,6 +187,7 @@ def test_candidate_turn_fast_analysis_skips_obvious_llm_classification():
     )
 
     assert consent and consent.grant_consent is True
+    assert goodbye and goodbye.request_termination is True
     assert termination and termination.request_termination is True
     assert clarification
     assert clarification.grant_consent is False
@@ -234,6 +239,18 @@ def test_incomplete_assistant_fragment_detection():
     )
     assert not RealtimeBridge._looks_like_incomplete_assistant_fragment(
         "Could you tell me why you're interested in this role?"
+    )
+
+
+def test_incomplete_user_fragment_detection():
+    assert RealtimeBridge._looks_like_incomplete_user_fragment(
+        "encapsulation, inheritance,"
+    )
+    assert RealtimeBridge._looks_like_incomplete_user_fragment(
+        "So on Python, for"
+    )
+    assert not RealtimeBridge._looks_like_incomplete_user_fragment(
+        "I built a FastAPI service for interview workflows."
     )
 
 

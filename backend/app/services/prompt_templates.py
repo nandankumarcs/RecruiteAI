@@ -29,6 +29,8 @@ DEFAULT_REPROMPT_TEXTS = {
     "reprompt_elaborate": "Can you tell me more about that?",
     "reprompt_example": "Can you give me an example?",
     "reprompt_clarify": "Could you clarify that?",
+    "reprompt_detail": "Can you explain that in more detail?",
+    "reprompt_background_interest": "Can you share your background and what excites you about this role?",
 }
 
 # Clarification Templates
@@ -36,6 +38,7 @@ DEFAULT_REPROMPT_TEXTS = {
 DEFAULT_CLARIFICATION_TEXTS = {
     "clarification_repeat": "Could you repeat that?",
     "clarification_more": "Tell me more about that.",
+    "clarification_im_here": "I'm here. Please continue.",
 }
 
 # Closing Templates
@@ -43,6 +46,7 @@ DEFAULT_CLARIFICATION_TEXTS = {
 DEFAULT_CLOSING_TEXTS = {
     "closing_thank_you": "Thank you for your time.",
     "closing_next_steps": "We'll be in touch soon.",
+    "closing_goodbye": "Understood. Thank you for your time today. Goodbye.",
 }
 
 # Filler Templates

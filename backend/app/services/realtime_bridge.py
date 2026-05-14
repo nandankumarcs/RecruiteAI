@@ -190,6 +190,8 @@ class RealtimeBridge:
             "Critical Rules:\n"
             "- No consent = No interview questions.\n"
             "- If answer is too short (yes/ok), ask for details/restate question.\n"
+            "- If the candidate sounds mid-sentence, incomplete, or paused briefly, wait for continuation instead of interrupting.\n"
+            "- Ask at most one concise follow-up before moving on. Do not stack multiple follow-ups on a partial answer.\n"
             "- If the candidate says hello or asks if you are there, acknowledge once and repeat only the core question.\n"
             "- If the candidate asks a clarifying or meta question, answer it briefly and then restate only the core question.\n"
             "- Treat clarification, confusion, or requests to repeat as continued engagement, not refusal or completion.\n"
@@ -329,6 +331,12 @@ class RealtimeBridge:
         text_for_match = f" {text_for_match} "
 
         termination_phrases = (
+            "bye",
+            "goodbye",
+            "bye bye",
+            "okay bye",
+            "ok bye",
+            "thank you bye",
             "not interested",
             "don't call",
             "do not call",
@@ -415,6 +423,41 @@ class RealtimeBridge:
             "would you",
         )
         return any(lowered.endswith(word) for word in trailing_words)
+
+    @classmethod
+    def _looks_like_incomplete_user_fragment(cls, content: str) -> bool:
+        text = cls._clean_message_text(content)
+        if not text:
+            return False
+
+        normalized = " ".join(text.split())
+        lowered = normalized.lower()
+        stripped = lowered.rstrip()
+
+        if normalized.endswith(","):
+            return True
+        if normalized.endswith(("...", "…")):
+            return True
+        if len(normalized.split()) <= 2 and not normalized.endswith((".", "?", "!")):
+            return True
+
+        trailing_fragments = (
+            "and",
+            "or",
+            "because",
+            "so",
+            "for",
+            "but",
+            "then",
+            "like",
+            "which",
+            "that",
+            "these are the few things that we generally look for",
+            "so on python",
+            "let me think",
+            "one second",
+        )
+        return any(stripped.endswith(fragment) for fragment in trailing_fragments)
 
     @classmethod
     def _is_consent_prompt(cls, content: str) -> bool:

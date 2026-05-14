@@ -1,17 +1,15 @@
 """
-Tests for RuntimeSelectionLayer data structures.
-
-Tests the PromptCategory enum and AudioSourceSelection dataclass
-defined in task 4.1.
+Tests for RuntimeSelectionLayer data structures and matching behavior.
 """
 
-import pytest
 from uuid import uuid4
 
 from app.services.runtime_selection_layer import (
     PromptCategory,
     AudioSourceSelection,
+    RuntimeSelectionLayer,
 )
+from app.models.question import InterviewQuestion
 
 
 class TestPromptCategory:
@@ -66,6 +64,52 @@ class TestAudioSourceSelection:
         assert selection.asset is None
         assert selection.fallback_text is None
         assert selection.filler_key is None
+
+
+class DummyPromptAudioService:
+    async def get_ready_audio_asset(self, **kwargs):
+        return None
+
+
+class DummyFillerQueueManager:
+    pass
+
+
+def test_runtime_selection_matches_question_with_abbreviation_variation():
+    layer = RuntimeSelectionLayer(DummyPromptAudioService(), DummyFillerQueueManager())
+    question = InterviewQuestion(
+        id=uuid4(),
+        job_id=uuid4(),
+        question_text="Can you explain the basic concepts of Object-Oriented Programming and how they apply to Python?",
+        order_index=1,
+    )
+
+    matched = layer._match_question(
+        "Can you explain the basic concepts of Object-Oriented Programming (OOP) and how they apply to Python?",
+        [question],
+    )
+
+    assert matched is not None
+    assert matched.id == question.id
+
+
+def test_runtime_selection_maps_common_follow_up_variants_to_cached_templates():
+    layer = RuntimeSelectionLayer(DummyPromptAudioService(), DummyFillerQueueManager())
+
+    assert (
+        layer._match_template(
+            "Could you please elaborate on those five concepts in OOP?",
+            PromptCategory.REPROMPT,
+        )
+        == "reprompt_elaborate"
+    )
+    assert (
+        layer._match_template(
+            "Can you explain each of those five concepts in detail?",
+            PromptCategory.REPROMPT,
+        )
+        == "reprompt_detail"
+    )
 
     def test_create_with_live_tts_fallback(self):
         """Test creating selection for live TTS fallback."""

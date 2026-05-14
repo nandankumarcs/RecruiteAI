@@ -362,6 +362,43 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
             call_id=call_id,
         )
 
+    async def _play_terminal_message_and_end_call(
+        self,
+        *,
+        websocket: WebSocket,
+        provider: str,
+        stream_id: str,
+        text: str,
+        call_id: uuid.UUID,
+        state: ConversationState,
+        job_id: uuid.UUID | None,
+        questions: list,
+        provider_call_id: str | None,
+    ) -> None:
+        if self._current_tts_task and not self._current_tts_task.done():
+            self._current_tts_task.cancel()
+            await websocket.send_json(
+                self._build_clear_audio_event(provider=provider, stream_id=stream_id)
+            )
+            try:
+                await self._current_tts_task
+            except asyncio.CancelledError:
+                pass
+
+        await self._play_assistant_turn(
+            websocket=websocket,
+            provider=provider,
+            stream_id=stream_id,
+            text=text,
+            call_id=call_id,
+            state=state,
+            job_id=job_id,
+            questions=questions,
+        )
+        await asyncio.sleep(0.2)
+        if provider_call_id:
+            await asyncio.to_thread(self.telephony.end_call, provider_call_id)
+
     @traceable(run_type="llm", name="voice_turn_generator")
     async def _generate_next_turn(
         self,
@@ -781,6 +818,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
 
                 async def receive_stt_events() -> None:
                     nonlocal finalized_segments
+                    pending_fragment_text = ""
+                    pending_fragment_task: asyncio.Task | None = None
+                    pending_fragment_generation = 0
 
                     async def process_user_utterance(utterance: str) -> None:
                         nonlocal finalized_segments
@@ -813,18 +853,49 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             state_changed = True
 
                         if state.termination_requested:
-                            await self._close_call_with_message(
+                            response_text = "Understood. Thank you for your time today. Goodbye."
+                            logger.info("Assistant turn completed (Deepgram, call=%s): %s", call_id, response_text)
+                            await self._append_message(
+                                call_id,
+                                "assistant",
+                                response_text,
+                                item_key=f"deepgram-assistant-{uuid.uuid4()}",
+                            )
+                            await self._play_terminal_message_and_end_call(
+                                websocket=websocket,
+                                provider=provider,
+                                stream_id=stream_id or "",
+                                text=response_text,
                                 call_id=call_id,
+                                state=state,
+                                job_id=job.id if job else None,
+                                questions=questions,
                                 provider_call_id=provider_call_id,
-                                message="Understood. Thank you for your time today. Goodbye.",
                             )
                             stop_event.set()
                             return
                         if state.off_topic_count >= 2:
-                            await self._close_call_with_message(
+                            response_text = (
+                                "It sounds like now is not the right time for this screening. "
+                                "Thank you for your time. Goodbye."
+                            )
+                            logger.info("Assistant turn completed (Deepgram, call=%s): %s", call_id, response_text)
+                            await self._append_message(
+                                call_id,
+                                "assistant",
+                                response_text,
+                                item_key=f"deepgram-assistant-{uuid.uuid4()}",
+                            )
+                            await self._play_terminal_message_and_end_call(
+                                websocket=websocket,
+                                provider=provider,
+                                stream_id=stream_id or "",
+                                text=response_text,
                                 call_id=call_id,
+                                state=state,
+                                job_id=job.id if job else None,
+                                questions=questions,
                                 provider_call_id=provider_call_id,
-                                message="It sounds like now is not the right time for this screening. Thank you for your time. Goodbye.",
                             )
                             stop_event.set()
                             return
@@ -850,6 +921,22 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             item_key=f"deepgram-assistant-{uuid.uuid4()}",
                         )
 
+                        should_end_after_playback = state_changed and self._should_end_call(response_text)
+                        if should_end_after_playback:
+                            await self._play_terminal_message_and_end_call(
+                                websocket=websocket,
+                                provider=provider,
+                                stream_id=stream_id or "",
+                                text=response_text,
+                                call_id=call_id,
+                                state=state,
+                                job_id=job.id if job else None,
+                                questions=questions,
+                                provider_call_id=provider_call_id,
+                            )
+                            stop_event.set()
+                            return
+
                         await self._start_tts_task(
                             websocket=websocket,
                             provider=provider,
@@ -861,9 +948,44 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             questions=questions,
                         )
 
-                        if state_changed and self._should_end_call(response_text) and provider_call_id:
-                            await asyncio.to_thread(self.telephony.end_call, provider_call_id)
-                            stop_event.set()
+                    async def flush_pending_fragment(expected_generation: int) -> None:
+                        nonlocal pending_fragment_text, pending_fragment_task
+                        await asyncio.sleep(settings.PIPELINE_USER_FRAGMENT_GRACE_MS / 1000)
+                        if expected_generation != pending_fragment_generation:
+                            return
+                        utterance = pending_fragment_text.strip()
+                        pending_fragment_text = ""
+                        pending_fragment_task = None
+                        if utterance:
+                            await process_user_utterance(utterance)
+
+                    async def queue_or_process_user_utterance(utterance: str) -> None:
+                        nonlocal pending_fragment_generation, pending_fragment_task, pending_fragment_text
+                        cleaned = utterance.strip()
+                        if not cleaned:
+                            return
+
+                        if self._looks_like_incomplete_user_fragment(cleaned):
+                            pending_fragment_text = " ".join(
+                                segment
+                                for segment in (pending_fragment_text, cleaned)
+                                if segment
+                            ).strip()
+                            pending_fragment_generation += 1
+                            if pending_fragment_task and not pending_fragment_task.done():
+                                pending_fragment_task.cancel()
+                            pending_fragment_task = asyncio.create_task(
+                                flush_pending_fragment(pending_fragment_generation)
+                            )
+                            return
+
+                        if pending_fragment_task and not pending_fragment_task.done():
+                            pending_fragment_task.cancel()
+                        if pending_fragment_text:
+                            cleaned = f"{pending_fragment_text} {cleaned}".strip()
+                            pending_fragment_text = ""
+                        pending_fragment_task = None
+                        await process_user_utterance(cleaned)
 
                     try:
                         async for raw in stt_ws:
@@ -881,7 +1003,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                 utterance = " ".join(finalized_segments).strip()
                                 finalized_segments = []
                                 if utterance:
-                                    await process_user_utterance(utterance)
+                                    await queue_or_process_user_utterance(utterance)
                                 continue
 
                             if data.get("type") != "Results":
@@ -920,11 +1042,13 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             utterance = " ".join(finalized_segments).strip() or transcript
                             finalized_segments = []
                             self._pending_barge_in = False
-                            await process_user_utterance(utterance)
+                            await queue_or_process_user_utterance(utterance)
                             if stop_event.is_set():
                                 return
 
                     finally:
+                        if pending_fragment_task and not pending_fragment_task.done():
+                            pending_fragment_task.cancel()
                         log_debug("STT receiver task finished")
 
                 stt_task = asyncio.create_task(receive_stt_events())

@@ -65,6 +65,9 @@ class MockTelephonyProvider:
     def start_recording(self, call_sid: str, callback_url: str | None = None) -> None:
         return
 
+    def fetch_call_details(self, call_sid: str) -> dict | None:
+        return None
+
 
 class ExotelTelephonyProvider:
     provider_name = "exotel"
@@ -207,6 +210,24 @@ class ExotelTelephonyProvider:
     def start_recording(self, call_sid: str, callback_url: str | None = None) -> None:
         return
 
+    def fetch_call_details(self, call_sid: str) -> dict | None:
+        if self.mock_mode:
+            return None
+
+        import requests
+
+        base_url = f"https://{settings.EXOTEL_SUBDOMAIN}/v1/Accounts/{settings.EXOTEL_ACCOUNT_SID}"
+        try:
+            response = requests.get(
+                f"{base_url}/Calls/{call_sid}.json",
+                auth=self._auth,
+                timeout=10,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception:
+            return None
+
 
 class TwilioTelephonyProvider:
     provider_name = "twilio"
@@ -294,6 +315,9 @@ class TwilioTelephonyProvider:
     def start_recording(self, call_sid: str, callback_url: str | None = None) -> None:
         return
 
+    def fetch_call_details(self, call_sid: str) -> dict | None:
+        return None
+
 
 class TelephonyService:
     """Facade that selects the configured telephony provider."""
@@ -339,6 +363,12 @@ class TelephonyService:
 
     def start_recording(self, call_sid: str, callback_url: str | None = None) -> None:
         self._provider.start_recording(call_sid, callback_url)
+
+    def fetch_call_details(self, call_sid: str) -> dict | None:
+        fetch = getattr(self._provider, "fetch_call_details", None)
+        if not fetch:
+            return None
+        return fetch(call_sid)
 
 
 def get_telephony_service() -> TelephonyService:
