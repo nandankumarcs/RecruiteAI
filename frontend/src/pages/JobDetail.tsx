@@ -26,6 +26,10 @@ import { Markdown } from "@/components/ui/Markdown";
 
 type DetailTab = "resumes" | "calls" | "strategy" | "details";
 
+type ResumeSortBy = "matching_score" | "candidate_name" | "status" | "created_at";
+type CallSortBy = "created_at" | "status" | "phone_number";
+type SortOrder = "asc" | "desc";
+
 const tabs: Array<{ key: DetailTab; label: string }> = [
 
   { key: "resumes", label: "Candidates" },
@@ -49,17 +53,59 @@ export function JobDetail() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
+  const [totalResumes, setTotalResumes] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(20);
+  const [sortBy, setSortBy] = useState<ResumeSortBy>("matching_score");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
+
+  const [totalCalls, setTotalCalls] = useState(0);
+  const [completedCallsCount, setCompletedCallsCount] = useState(0);
+  const [callsPage, setCallsPage] = useState(1);
+  const [callsPageSize] = useState(20);
+  const [callsSortBy, setCallsSortBy] = useState<CallSortBy>("created_at");
+  const [callsSortOrder, setCallsSortOrder] = useState<SortOrder>("desc");
+
+  const fetchResumes = useCallback(async (page: number, sb: ResumeSortBy, so: SortOrder) => {
+    if (!jobId) return;
+    try {
+      const res = await api.get(`/jobs/${jobId}/resumes`, {
+        params: { page, page_size: pageSize, sort_by: sb, sort_order: so },
+      });
+      setResumes(res.data.items);
+      setTotalResumes(res.data.total);
+    } catch (error) {
+      console.error("Failed to fetch resumes", error);
+      toast({ variant: "error", title: "Couldn't load candidates", description: "Try refreshing the page." });
+    }
+  }, [jobId, pageSize, toast]);
+
   const fetchJobData = useCallback(async () => {
     if (!jobId) return;
     try {
       const [jobRes, resumesRes, callsRes] = await Promise.all([
         api.get(`/jobs/${jobId}`),
-        api.get(`/jobs/${jobId}/resumes`),
-        api.get(`/jobs/${jobId}/calls`),
+        api.get(`/jobs/${jobId}/resumes`, {
+          params: { page: 1, page_size: pageSize, sort_by: "matching_score", sort_order: "desc" },
+        }),
+        api.get(`/jobs/${jobId}/calls`, {
+          params: { page: 1, page_size: callsPageSize, sort_by: "created_at", sort_order: "desc" },
+        }),
       ]);
       setJob(jobRes.data);
-      setResumes(resumesRes.data);
-      setCalls(callsRes.data);
+      setResumes(resumesRes.data.items);
+      setTotalResumes(resumesRes.data.total);
+      setCalls(callsRes.data.items);
+      setTotalCalls(callsRes.data.total);
+      setCompletedCallsCount(callsRes.data.completed_count);
+      // Seed active calls from the dedicated active_calls field so CallProgressIndicator works
+      if (callsRes.data.active_calls?.length) {
+        setCalls((prev) => {
+          const ids = new Set(prev.map((c: CallRecord) => c.id));
+          const extra = callsRes.data.active_calls.filter((c: CallRecord) => !ids.has(c.id));
+          return extra.length ? [...extra, ...prev] : prev;
+        });
+      }
     } catch (error) {
       console.error("Failed to fetch job data", error);
       toast({
@@ -70,7 +116,46 @@ export function JobDetail() {
     } finally {
       setIsLoading(false);
     }
-  }, [jobId, toast]);
+  }, [jobId, pageSize, callsPageSize, toast]);
+
+  const handleSortChange = useCallback((newSortBy: ResumeSortBy, newSortOrder: SortOrder) => {
+    setSortBy(newSortBy);
+    setSortOrder(newSortOrder);
+    setCurrentPage(1);
+    void fetchResumes(1, newSortBy, newSortOrder);
+  }, [fetchResumes]);
+
+  const handlePageChange = useCallback((newPage: number) => {
+    setCurrentPage(newPage);
+    void fetchResumes(newPage, sortBy, sortOrder);
+  }, [fetchResumes, sortBy, sortOrder]);
+
+  const fetchCalls = useCallback(async (page: number, sb: CallSortBy, so: SortOrder) => {
+    if (!jobId) return;
+    try {
+      const res = await api.get(`/jobs/${jobId}/calls`, {
+        params: { page, page_size: callsPageSize, sort_by: sb, sort_order: so },
+      });
+      setCalls(res.data.items);
+      setTotalCalls(res.data.total);
+      setCompletedCallsCount(res.data.completed_count);
+    } catch (error) {
+      console.error("Failed to fetch calls", error);
+      toast({ variant: "error", title: "Couldn't load call history", description: "Try refreshing." });
+    }
+  }, [jobId, callsPageSize, toast]);
+
+  const handleCallsSortChange = useCallback((newSortBy: CallSortBy, newSortOrder: SortOrder) => {
+    setCallsSortBy(newSortBy);
+    setCallsSortOrder(newSortOrder);
+    setCallsPage(1);
+    void fetchCalls(1, newSortBy, newSortOrder);
+  }, [fetchCalls]);
+
+  const handleCallsPageChange = useCallback((newPage: number) => {
+    setCallsPage(newPage);
+    void fetchCalls(newPage, callsSortBy, callsSortOrder);
+  }, [fetchCalls, callsSortBy, callsSortOrder]);
 
   useEffect(() => {
     void fetchJobData();
@@ -95,13 +180,19 @@ export function JobDetail() {
     setIsDeleting(true);
     try {
       await api.delete(`/resumes/${resumeToDelete}`);
-      setResumes((prev) => prev.filter((r) => r.id !== resumeToDelete));
       setResumeToDelete(null);
       toast({
         variant: "success",
         title: "Resume removed",
         description: "The candidate record has been deleted.",
       });
+      // Refetch to keep pagination accurate; go to previous page if current page is now empty
+      const newTotal = totalResumes - 1;
+      const maxPage = Math.max(1, Math.ceil(newTotal / pageSize));
+      const pageToLoad = Math.min(currentPage, maxPage);
+      setCurrentPage(pageToLoad);
+      await fetchResumes(pageToLoad, sortBy, sortOrder);
+      setTotalResumes(newTotal);
     } catch (error) {
       console.error("Failed to delete resume", error);
       toast({
@@ -248,7 +339,7 @@ export function JobDetail() {
                   <div className="flex items-center justify-between px-2">
                     <h3 className="text-3xl font-black tracking-tighter">CANDIDATES</h3>
                     <Badge variant="outline" className="font-black tracking-tight uppercase px-4 py-1.5 rounded-lg border-primary/20 bg-primary/10 text-primary">
-                      {resumes.length} Total
+                      {totalResumes} Total
                     </Badge>
                   </div>
                   <ResumeTable
@@ -257,6 +348,13 @@ export function JobDetail() {
                     onDelete={(id) => setResumeToDelete(id)}
                     onView={setViewingResume}
                     onStartCall={handleStartCall}
+                    sortBy={sortBy}
+                    sortOrder={sortOrder}
+                    onSortChange={handleSortChange}
+                    currentPage={currentPage}
+                    pageSize={pageSize}
+                    totalItems={totalResumes}
+                    onPageChange={handlePageChange}
                   />
                 </div>
               )}
@@ -266,12 +364,19 @@ export function JobDetail() {
                   <div className="flex items-center justify-between px-2">
                     <h3 className="text-3xl font-black tracking-tighter">CALL HISTORY</h3>
                     <Badge variant="outline" className="font-black tracking-tight uppercase px-4 py-1.5 rounded-lg border-primary/20 bg-primary/10 text-primary">
-                      {calls.length} Calls
+                      {totalCalls} Calls
                     </Badge>
                   </div>
-                  <div className="rounded-lg border border-border/40 bg-card/40 backdrop-blur-xl overflow-hidden shadow-md">
-                    <CallsTable calls={calls} />
-                  </div>
+                  <CallsTable
+                    calls={calls}
+                    sortBy={callsSortBy}
+                    sortOrder={callsSortOrder}
+                    onSortChange={handleCallsSortChange}
+                    currentPage={callsPage}
+                    pageSize={callsPageSize}
+                    totalItems={totalCalls}
+                    onPageChange={handleCallsPageChange}
+                  />
                 </div>
               )}
 
@@ -337,12 +442,12 @@ export function JobDetail() {
               </div>
               <div className="flex items-center justify-between">
                 <span>Total calls</span>
-                <span className="font-medium text-foreground">{calls.length}</span>
+                <span className="font-medium text-foreground">{totalCalls}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Completed calls</span>
                 <span className="font-medium text-foreground">
-                  {calls.filter((call) => call.status === "completed").length}
+                  {completedCallsCount}
                 </span>
               </div>
             </CardContent>

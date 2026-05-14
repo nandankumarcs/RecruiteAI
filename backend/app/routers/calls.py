@@ -8,9 +8,11 @@ import asyncio
 import uuid
 
 import httpx
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +30,7 @@ from app.models.job import Job
 from app.models.question import InterviewQuestion
 from app.models.resume import Resume
 from app.models.user import User
-from app.schemas.call import CallEvaluationResponse, CallResponse, CallStartRequest, CallStartResponse
+from app.schemas.call import CallEvaluationResponse, CallResponse, CallStartRequest, CallStartResponse, PaginatedCallsResponse
 from app.services.analytics import analytics_service
 from app.services.call_evaluation import auto_evaluate_call_if_ready
 
@@ -273,33 +275,77 @@ async def start_call(
     return CallStartResponse(provider=outbound.provider, call=call)
 
 
-@router.get("/api/jobs/{job_id}/calls", response_model=list[CallResponse])
+ACTIVE_CALL_STATUSES = ("pending", "queued", "ringing", "in_progress")
+TERMINAL_CALL_STATUSES = ("completed", "failed", "no_answer", "busy", "cancelled")
+
+
+@router.get("/api/jobs/{job_id}/calls", response_model=PaginatedCallsResponse)
 async def list_calls(
     job_id: uuid.UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    sort_by: Literal["created_at", "status", "phone_number"] = Query("created_at"),
+    sort_order: Literal["asc", "desc"] = Query("desc"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List call records for a job owned by the current user."""
+    """List call records for a job with server-side pagination and sorting."""
     owned_job = await db.execute(
         select(Job.id).where(Job.id == job_id, Job.user_id == current_user.id)
     )
     if not owned_job.scalar_one_or_none():
         raise NotFoundError(resource="Job")
 
-    result = await db.execute(
+    sort_col = getattr(Call, sort_by)
+    primary_order = desc(sort_col) if sort_order == "desc" else asc(sort_col)
+    secondary_order = desc(Call.created_at) if sort_by != "created_at" else None
+
+    total_result = await db.execute(
+        select(func.count()).select_from(Call).where(Call.job_id == job_id)
+    )
+    total = total_result.scalar_one()
+
+    completed_result = await db.execute(
+        select(func.count()).select_from(Call).where(
+            Call.job_id == job_id, Call.status == "completed"
+        )
+    )
+    completed_count = completed_result.scalar_one()
+
+    order_clauses = [primary_order, secondary_order] if secondary_order is not None else [primary_order]
+    items_result = await db.execute(
         select(Call)
         .options(selectinload(Call.messages))
         .where(Call.job_id == job_id)
-        .order_by(Call.created_at.desc())
+        .order_by(*order_clauses)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
-    calls = result.scalars().all()
-    for call in calls:
+    items = list(items_result.scalars().all())
+    for call in items:
         call.cost_breakdown = hydrate_cost_breakdown(
             existing=call.cost_breakdown,
             provider=call.provider,
             duration_seconds=call.duration_seconds,
         )
-    return calls
+
+    active_result = await db.execute(
+        select(Call)
+        .options(selectinload(Call.messages))
+        .where(Call.job_id == job_id, Call.status.in_(ACTIVE_CALL_STATUSES))
+        .order_by(Call.created_at.desc())
+    )
+    active_calls = list(active_result.scalars().all())
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+        "completed_count": completed_count,
+        "active_calls": active_calls,
+    }
 
 
 @router.get("/api/calls/{call_id}", response_model=CallResponse)

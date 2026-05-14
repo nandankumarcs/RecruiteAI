@@ -2,78 +2,129 @@ import { Link } from "react-router-dom";
 import { ExternalLink, PhoneCall } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { DataTable } from "@/components/ui/DataTable";
+import type { ColumnDef } from "@/components/ui/DataTable";
+import { cn } from "@/lib/utils";
 import type { CallRecord } from "@/lib/calls";
 
 interface CallsTableProps {
   calls: CallRecord[];
+  sortBy: string;
+  sortOrder: "asc" | "desc";
+  onSortChange: (sortBy: string, sortOrder: "asc" | "desc") => void;
+  currentPage: number;
+  pageSize: number;
+  totalItems: number;
+  onPageChange: (page: number) => void;
 }
 
-export function CallsTable({ calls }: CallsTableProps) {
-  if (calls.length === 0) {
-    return (
-      <div className="rounded-lg border border-dashed border-border/50 bg-muted/20 py-12 text-center">
-        <PhoneCall className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
-        <h3 className="text-lg font-semibold">No calls yet</h3>
-        <p className="text-muted-foreground">Start an interview call from a parsed candidate to see history here.</p>
-      </div>
-    );
-  }
+const statusTone: Record<string, string> = {
+  completed: "bg-green-500/10 text-green-500 border-green-500/20",
+  failed: "bg-destructive/10 text-destructive border-destructive/20",
+  in_progress: "bg-blue-500/10 text-blue-500 border-blue-500/20",
+  ringing: "bg-amber-500/10 text-amber-500 border-amber-500/20",
+};
 
+const columns: ColumnDef<CallRecord>[] = [
+  {
+    key: "phone",
+    label: "Phone",
+    sortKey: "phone_number",
+    cell: (call) => <span className="font-medium">{call.phone_number}</span>,
+  },
+  {
+    key: "provider",
+    label: "Provider",
+    className: "text-xs font-bold tracking-tight text-muted-foreground uppercase",
+    cell: (call) => call.provider,
+  },
+  {
+    key: "status",
+    label: "Status",
+    sortKey: "status",
+    cell: (call) => (
+      <Badge
+        variant="outline"
+        className={cn("capitalize text-[10px] font-bold px-2 py-0.5", statusTone[call.status] ?? "")}
+      >
+        {call.status.replace(/_/g, " ")}
+      </Badge>
+    ),
+  },
+  {
+    key: "runtime",
+    label: "Runtime",
+    className: "text-xs text-muted-foreground",
+    cell: (call) => call.voice_runtime.replace(/_/g, " "),
+  },
+  {
+    key: "score",
+    label: "Score",
+    className: "text-sm",
+    cell: (call) =>
+      typeof call.ai_evaluation?.overall_score === "number"
+        ? `${call.ai_evaluation.overall_score}/10`
+        : "—",
+  },
+  {
+    key: "cost",
+    label: "Cost",
+    className: "text-sm",
+    cell: (call) =>
+      typeof call.cost_breakdown?.estimated_total_usd === "number"
+        ? `$${call.cost_breakdown.estimated_total_usd.toFixed(4)}`
+        : "—",
+  },
+  {
+    key: "created",
+    label: "Created",
+    sortKey: "created_at",
+    headerClassName: "text-right",
+    className: "text-xs text-muted-foreground text-right",
+    cell: (call) => new Date(call.created_at).toLocaleString(),
+  },
+  {
+    key: "action",
+    label: "Action",
+    headerClassName: "text-right",
+    className: "text-right",
+    cell: (call) => (
+      <Link
+        to={`/calls/${call.id}`}
+        className="inline-flex items-center gap-1.5 text-xs font-bold text-primary hover:underline"
+      >
+        View
+        <ExternalLink className="h-3.5 w-3.5" />
+      </Link>
+    ),
+  },
+];
+
+export function CallsTable({
+  calls,
+  sortBy,
+  sortOrder,
+  onSortChange,
+  currentPage,
+  pageSize,
+  totalItems,
+  onPageChange,
+}: CallsTableProps) {
   return (
-    <div className="overflow-hidden rounded-lg border border-border/50 bg-card/30 shadow-sm backdrop-blur-sm">
-      <Table>
-        <TableHeader className="bg-muted/50">
-          <TableRow>
-            <TableHead className="font-semibold">Phone</TableHead>
-            <TableHead className="font-semibold">Provider</TableHead>
-            <TableHead className="font-semibold">Status</TableHead>
-            <TableHead className="font-semibold">Runtime</TableHead>
-            <TableHead className="font-semibold">Score</TableHead>
-            <TableHead className="font-semibold">Cost</TableHead>
-            <TableHead className="font-semibold">Created</TableHead>
-            <TableHead className="text-right font-semibold">Action</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {calls.map((call) => (
-            <TableRow key={call.id} className="transition-colors hover:bg-muted/30">
-              <TableCell className="font-medium">{call.phone_number}</TableCell>
-              <TableCell className="uppercase text-muted-foreground">{call.provider}</TableCell>
-              <TableCell>
-                <Badge variant="outline" className="capitalize">
-                  {call.status.replace("_", " ")}
-                </Badge>
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {call.voice_runtime.replace(/_/g, " ")}
-              </TableCell>
-              <TableCell>
-                {typeof call.ai_evaluation?.overall_score === "number"
-                  ? `${call.ai_evaluation.overall_score}/10`
-                  : "—"}
-              </TableCell>
-              <TableCell>
-                {typeof call.cost_breakdown?.estimated_total_usd === "number"
-                  ? `$${call.cost_breakdown.estimated_total_usd.toFixed(4)}`
-                  : "—"}
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {new Date(call.created_at).toLocaleString()}
-              </TableCell>
-              <TableCell className="text-right">
-                <Link
-                  to={`/calls/${call.id}`}
-                  className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
-                >
-                  View
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </Link>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
+    <DataTable
+      columns={columns}
+      data={calls}
+      rowKey={(c) => c.id}
+      sortBy={sortBy}
+      sortOrder={sortOrder}
+      onSortChange={onSortChange}
+      currentPage={currentPage}
+      pageSize={pageSize}
+      totalItems={totalItems}
+      onPageChange={onPageChange}
+      emptyIcon={<PhoneCall className="h-8 w-8 text-muted-foreground/50" />}
+      emptyTitle="No calls yet"
+      emptyDescription="Start an interview call from a parsed candidate to see history here."
+    />
   );
 }

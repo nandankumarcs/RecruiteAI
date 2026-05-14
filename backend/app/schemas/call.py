@@ -45,6 +45,18 @@ class CallResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PaginatedCallsResponse(BaseModel):
+    """Paginated response for call list with summary stats."""
+
+    items: list[CallResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    completed_count: int
+    active_calls: list[CallResponse]
+
+
 class CallStartResponse(BaseModel):
     """Response for call initiation."""
 

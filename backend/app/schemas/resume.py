@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
+from typing import Literal
 
 
 class ResumeBaseResponse(BaseModel):
@@ -34,3 +35,11 @@ class ResumeDetailResponse(ResumeResponse):
     """Detailed resume response including extracted text."""
 
     raw_text: str | None
+
+
+class PaginatedResumesResponse(BaseModel):
+    items: list[ResumeResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int

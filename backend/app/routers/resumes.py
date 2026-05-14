@@ -11,9 +11,11 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from typing import Literal
+
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.resume_parser_agent import ResumeParserAgent, get_resume_parser_agent
@@ -23,7 +25,7 @@ from app.database import get_db
 from app.models.job import Job
 from app.models.resume import Resume
 from app.models.user import User
-from app.schemas.resume import ResumeDetailResponse, ResumeResponse
+from app.schemas.resume import PaginatedResumesResponse, ResumeDetailResponse, ResumeResponse
 from app.services.storage import StorageProvider, get_storage_provider
 from app.services.resume_session_manager import get_session_manager, ResumeSessionManager
 from app.services.resume_progress_emitter import ResumeProgressEmitter
@@ -341,21 +343,50 @@ async def stream_resume_progress(
     )
 
 
-@router.get("/api/jobs/{job_id}/resumes", response_model=list[ResumeResponse])
+@router.get("/api/jobs/{job_id}/resumes", response_model=PaginatedResumesResponse)
 async def list_resumes(
     job_id: uuid.UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    sort_by: Literal["matching_score", "candidate_name", "status", "created_at"] = Query("matching_score"),
+    sort_order: Literal["asc", "desc"] = Query("desc"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List parsed/uploaded resumes for a job owned by the current user."""
+    """List resumes for a job with server-side pagination and sorting."""
     await _get_owned_job(job_id, db, current_user)
 
-    result = await db.execute(
-        select(Resume)
-        .where(Resume.job_id == job_id)
-        .order_by(Resume.matching_score.desc().nullslast(), Resume.created_at.desc())
+    sort_col = getattr(Resume, sort_by)
+    if sort_order == "desc":
+        primary_order = desc(sort_col).nullslast()
+    else:
+        primary_order = asc(sort_col).nullsfirst()
+
+    secondary_order = desc(Resume.created_at) if sort_by != "created_at" else None
+
+    base_query = select(Resume).where(Resume.job_id == job_id)
+
+    count_result = await db.execute(
+        select(func.count()).select_from(Resume).where(Resume.job_id == job_id)
     )
-    return result.scalars().all()
+    total = count_result.scalar_one()
+
+    order_clauses = [primary_order, secondary_order] if secondary_order is not None else [primary_order]
+    items_result = await db.execute(
+        base_query
+        .order_by(*order_clauses)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    items = items_result.scalars().all()
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+    }
 
 
 @router.get("/api/resumes/{resume_id}", response_model=ResumeDetailResponse)
