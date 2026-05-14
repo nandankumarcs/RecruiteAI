@@ -462,9 +462,13 @@ async def evaluate_call(
         raise ValidationError("Call transcript is required before evaluation.")
 
     evaluation = await evaluator.evaluate_call(call=call, job=job, resume=resume)
-    call.ai_evaluation = evaluation.model_dump()
-    call.evaluation_score = float(evaluation.overall_score)
-    call.evaluation_summary = evaluation.behavioral_summary
+    call.ai_evaluation = evaluation.model_dump(mode="json")
+    call.evaluation_score = (
+        float(evaluation.overall_score)
+        if evaluation.overall_score is not None
+        else None
+    )
+    call.evaluation_summary = evaluation.behavioral_summary or evaluation.remarks
     
     if call.status == "queued":
         call.status = "completed"

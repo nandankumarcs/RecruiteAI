@@ -41,7 +41,13 @@ async def auto_evaluate_call_if_ready(
             return False
 
         evaluation = await agent.evaluate_call(call=call, job=job, resume=resume)
-        call.ai_evaluation = evaluation.model_dump()
+        call.ai_evaluation = evaluation.model_dump(mode="json")
+        call.evaluation_score = (
+            float(evaluation.overall_score)
+            if evaluation.overall_score is not None
+            else None
+        )
+        call.evaluation_summary = evaluation.behavioral_summary or evaluation.remarks
         await session.commit()
         return True
 

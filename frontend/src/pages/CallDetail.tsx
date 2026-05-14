@@ -886,10 +886,10 @@ export function CallDetail() {
                       variant="outline"
                       className={recommendationClasses[evaluation.recommendation] ?? recommendationClasses.insufficient_data}
                     >
-                      {evaluation.recommendation.replaceAll("_", " ")}
+                      {evaluation.recommendation?.replaceAll("_", " ")}
                     </Badge>
                     <Badge variant="outline" className="border-border/60 text-muted-foreground">
-                      {nonScorableLabels[evaluation.status] ?? evaluation.status.replaceAll("_", " ")}
+                      {nonScorableLabels[evaluation.status] ?? evaluation.status?.replaceAll("_", " ")}
                     </Badge>
                     <Badge variant="outline" className="border-border/60 text-muted-foreground capitalize">
                       {evaluation.confidence} confidence

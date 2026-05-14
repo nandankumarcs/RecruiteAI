@@ -100,10 +100,14 @@ class FakeEvaluationAgent:
         from app.agents.evaluation_agent import EvaluationResult
 
         return EvaluationResult(
+            status="completed_evaluation",
+            confidence="high",
             overall_score=8,
             technical_score=8,
             communication_score=7,
             experience_score=8,
+            behavioral_score=7,
+            behavioral_summary="Clear and confident responses.",
             remarks="Strong match for the role based on the transcript.",
             strengths=["Clear technical examples", "Good role alignment"],
             weaknesses=["Could provide more depth on trade-offs"],
@@ -348,8 +352,9 @@ async def test_evaluate_call(
 
     assert response.status_code == 200
     data = response.json()
-    assert data["schema_version"] == "evaluation.v1"
+    assert data["schema_version"] == "evaluation.v2"
     assert data["overall_score"] == 8
+    assert data["status"] == "completed_evaluation"
 
 
 @pytest.mark.asyncio
@@ -386,8 +391,10 @@ async def test_completed_status_callback_auto_evaluates_when_transcript_exists(
     await db_session.refresh(call)
     assert call.status == "completed"
     assert call.ai_evaluation is not None
-    assert call.ai_evaluation["schema_version"] == "evaluation.v1"
+    assert call.ai_evaluation["schema_version"] == "evaluation.v2"
     assert isinstance(call.ai_evaluation["overall_score"], int)
+    assert call.evaluation_score == float(call.ai_evaluation["overall_score"])
+    assert call.evaluation_summary == call.ai_evaluation["behavioral_summary"]
 
 
 @pytest.mark.asyncio

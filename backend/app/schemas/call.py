@@ -68,10 +68,14 @@ class CallEvaluationResponse(BaseModel):
     """Response for a stored call evaluation."""
 
     schema_version: str
-    overall_score: int
-    technical_score: int
-    communication_score: int
-    experience_score: int
+    status: str
+    confidence: str
+    overall_score: int | None
+    technical_score: int | None
+    communication_score: int | None
+    experience_score: int | None
+    behavioral_score: int | None = None
+    behavioral_summary: str | None = None
     remarks: str
     strengths: list[str]
     weaknesses: list[str]

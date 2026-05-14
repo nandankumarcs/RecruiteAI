@@ -22,7 +22,18 @@ export interface CallRecord {
   recording_path: string | null;
   transcript: string | null;
   ai_evaluation: {
-    overall_score?: number;
+    schema_version?: string;
+    status?: string;
+    confidence?: string;
+    overall_score?: number | null;
+    technical_score?: number | null;
+    communication_score?: number | null;
+    experience_score?: number | null;
+    behavioral_score?: number | null;
+    behavioral_summary?: string | null;
+    remarks?: string;
+    strengths?: string[];
+    weaknesses?: string[];
     recommendation?: string;
     [key: string]: unknown;
   } | null;

@@ -60,6 +60,13 @@ const difficultyClasses: Record<number, string> = {
   5: "bg-rose-500/10 text-rose-600 border-rose-500/20",
 };
 
+const recommendationClasses: Record<string, string> = {
+  advance: "bg-emerald-500 text-white border-none",
+  hold: "bg-amber-500 text-white border-none",
+  reject: "bg-rose-500 text-white border-none",
+  insufficient_data: "bg-slate-500 text-white border-none",
+};
+
 import { useCallWebSocket } from "@/hooks/useCallWebSocket";
 
 
@@ -372,26 +379,37 @@ export function ResumeDetailModal({
                     <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-6 space-y-4">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600/80">Behavioral Score</span>
-                        <span className="text-2xl font-black text-emerald-600">{(startedCall.ai_evaluation as any).behavioral_score}/10</span>
+                        <span className="text-2xl font-black text-emerald-600">
+                          {typeof (startedCall.ai_evaluation as any).behavioral_score === "number"
+                            ? `${(startedCall.ai_evaluation as any).behavioral_score}/10`
+                            : "N/A"}
+                        </span>
                       </div>
                       <p className="text-xs font-medium leading-relaxed text-emerald-900/70">
-                        {(startedCall.ai_evaluation as any).behavioral_summary}
+                        {(startedCall.ai_evaluation as any).behavioral_summary || "Not enough reliable behavioral evidence was available."}
                       </p>
                     </div>
 
                     <div className="bg-primary/5 border border-primary/20 rounded-xl p-6 space-y-4">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-black uppercase tracking-widest text-primary/80">Overall Fit</span>
-                        <span className="text-2xl font-black text-primary">{(startedCall.ai_evaluation as any).overall_score}/10</span>
+                        <span className="text-2xl font-black text-primary">
+                          {typeof (startedCall.ai_evaluation as any).overall_score === "number"
+                            ? `${(startedCall.ai_evaluation as any).overall_score}/10`
+                            : "N/A"}
+                        </span>
                       </div>
                       <Badge variant="outline" className={cn(
                         "font-black uppercase tracking-widest",
-                        (startedCall.ai_evaluation as any).recommendation === 'advance' ? "bg-emerald-500 text-white border-none" :
-                        (startedCall.ai_evaluation as any).recommendation === 'hold' ? "bg-amber-500 text-white border-none" :
-                        "bg-rose-500 text-white border-none"
+                        recommendationClasses[(startedCall.ai_evaluation as any).recommendation] ?? recommendationClasses.insufficient_data
                       )}>
                         {(startedCall.ai_evaluation as any).recommendation}
                       </Badge>
+                      {(startedCall.ai_evaluation as any).status !== "completed_evaluation" ? (
+                        <p className="text-xs font-medium leading-relaxed text-muted-foreground">
+                          This call was not scored as a full interview because the transcript did not contain enough reliable evidence.
+                        </p>
+                      ) : null}
                     </div>
                   </div>
 
