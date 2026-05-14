@@ -466,7 +466,7 @@ export function CallDetail() {
             </CardTitle>
           </CardHeader>
           <CardContent className="text-2xl font-semibold tracking-tight">
-            {evaluation ? `${evaluation.overall_score}/10` : "Pending"}
+            {typeof evaluation?.overall_score === "number" ? `${evaluation.overall_score}/10` : "N/A"}
           </CardContent>
         </Card>
       </div>
@@ -881,17 +881,17 @@ export function CallDetail() {
               <>
                 <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
                   <div className="text-sm text-muted-foreground">Recommendation</div>
-                  <div className="mt-2 flex items-center gap-2">
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
                     <Badge
                       variant="outline"
-                      className={recommendationClasses[evaluation.recommendation] ?? recommendationClasses.insufficient_data}
+                      className={`whitespace-nowrap capitalize ${recommendationClasses[evaluation.recommendation] ?? recommendationClasses.insufficient_data}`}
                     >
                       {evaluation.recommendation?.replaceAll("_", " ")}
                     </Badge>
-                    <Badge variant="outline" className="border-border/60 text-muted-foreground">
+                    <Badge variant="outline" className="whitespace-nowrap border-border/60 text-muted-foreground">
                       {nonScorableLabels[evaluation.status] ?? evaluation.status?.replaceAll("_", " ")}
                     </Badge>
-                    <Badge variant="outline" className="border-border/60 text-muted-foreground capitalize">
+                    <Badge variant="outline" className="whitespace-nowrap border-border/60 text-muted-foreground capitalize">
                       {evaluation.confidence} confidence
                     </Badge>
                   </div>
