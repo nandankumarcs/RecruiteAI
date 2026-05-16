@@ -52,6 +52,42 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# TTS text preprocessing
+# ---------------------------------------------------------------------------
+import re as _re
+
+def _prepare_tts_text(text: str, candidate_name: str | None) -> str:
+    """Preprocess assistant text before sending to TTS.
+
+    Two transformations:
+    1. Add a comma pause before the candidate's first name when it appears
+       mid-sentence without preceding punctuation.  This helps Sarvam's TTS
+       engine treat the name as a fresh prosodic unit rather than slurring it
+       into the preceding word — fixes "Hi Shreyansh" → "Shrenj" artifacts.
+    2. Strip any accidental role-prefix hallucinations the LLM might have added
+       (e.g. "User: ...", "Candidate: ...") so they are never spoken aloud.
+    """
+    if not text:
+        return text
+
+    # Strip leading role prefixes added by LLM hallucination
+    text = _re.sub(r"^(?:User|Candidate|Assistant|Recruiter)\s*:\s*", "", text.strip())
+
+    if candidate_name:
+        first_name = candidate_name.strip().split()[0]
+        if len(first_name) >= 4:  # only bother for non-trivial names
+            # "Hi Shreyansh" → "Hi, Shreyansh"  (insert comma before name if none)
+            text = _re.sub(
+                rf"(?<![,\.!\?])\s+({_re.escape(first_name)})\b",
+                r", \1",
+                text,
+                flags=_re.IGNORECASE,
+            )
+
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Deepgram nova-3 Keyterm Prompting
 # ---------------------------------------------------------------------------
 # These universal terms are always passed regardless of call context.
@@ -467,9 +503,15 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
             job_id=job_id,
             questions=questions,
         )
-        await asyncio.sleep(0.2)
+        # Give TTS a moment to flush to the client before closing.
+        await asyncio.sleep(1.5)
         if provider_call_id:
             await asyncio.to_thread(self.telephony.end_call, provider_call_id)
+        # Fix 1: always finalize the call here so status becomes 'completed'
+        # even when the WS stays open (browser provider) after the goodbye.
+        # _update_call_finished is idempotent — safe to call again from the
+        # finally block in handle() if the WS closes later.
+        await self._update_call_finished(call_id)
 
     @traceable(run_type="llm", name="voice_turn_generator")
     async def _generate_next_turn(
@@ -992,6 +1034,15 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             job=job,
                             questions=questions,
                             state=state,
+                        )
+                        if not response_text:
+                            return
+
+                        # Fix 3 & 4: strip LLM role-prefix hallucinations + add
+                        # TTS-friendly pauses before the candidate's first name.
+                        response_text = _prepare_tts_text(
+                            response_text,
+                            resume.candidate_name if resume else None,
                         )
                         if not response_text:
                             return

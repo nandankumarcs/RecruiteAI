@@ -66,8 +66,8 @@ class Settings(BaseSettings):
     PIPELINE_TTS_JITTER_BUFFER_MS: int = 200
     PIPELINE_STT_ENDPOINTING_MS: int = 1500   # 500→1500: covers natural thinking pauses
     PIPELINE_STT_UTTERANCE_END_MS: int = 2500  # 1000→2500: gives candidate time to finish
-    PIPELINE_USER_FRAGMENT_GRACE_MS: int = 1500 # 900→1500: buffer after speech_final
-    PIPELINE_MIN_TURN_SECONDS: float = 1.0     # speech_final with < 1s + < 4 words → fragment
+    PIPELINE_USER_FRAGMENT_GRACE_MS: int = 2000 # 1500→2000: covers slower speakers
+    PIPELINE_MIN_TURN_SECONDS: float = 1.5     # 1.0→1.5: require 1.5s of speech before LLM
 
     # --- Twilio Telephony ---
     TWILIO_ACCOUNT_SID: str = ""

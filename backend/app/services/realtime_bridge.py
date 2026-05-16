@@ -201,7 +201,10 @@ class RealtimeBridge:
             "- Treat clarification, confusion, or requests to repeat as continued engagement, not refusal or completion.\n"
             "- Decline non-interview requests (poems/stories/jokes) once, then hang up if they persist.\n"
             "- Do not end the call unless the candidate clearly refuses, asks to stop, or all interview questions are complete.\n"
-            "- After final question, say goodbye and end.\n\n"
+            "- After final question, say goodbye and end.\n"
+            "- NEVER begin your response with 'User:', 'Candidate:', 'Assistant:', or any role prefix. Speak directly.\n"
+            "- NEVER complete or predict the candidate's unfinished sentence. Wait for them to finish.\n"
+            "- Your response is ONLY your next spoken words. Do not include dialogue labels or transcript formatting.\n\n"
             "Current State:\n- " + "\n- ".join(phase_rules)
         )
 
