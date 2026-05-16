@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { BackgroundImageTexture } from "@/components/ui/bg-image-texture";
 
 export function AppLayout() {
   const { user, logout } = useAuth();
@@ -129,8 +130,11 @@ export function AppLayout() {
         </div>
       </header>
 
-      <main className="flex-1 p-4 md:p-8 max-w-7xl mx-auto w-full">
-        <Outlet />
+      <main className="relative flex-1 px-4 md:px-8 py-6 w-full">
+        <BackgroundImageTexture variant="fabric-of-squares" opacity={0.08} className="absolute inset-0" />
+        <div className="relative z-10">
+          <Outlet />
+        </div>
       </main>
     </div>
   );
