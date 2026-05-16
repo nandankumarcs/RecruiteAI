@@ -51,6 +51,75 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Deepgram nova-3 Keyterm Prompting
+# ---------------------------------------------------------------------------
+# These universal terms are always passed regardless of call context.
+_BASE_KEYTERMS: tuple[str, ...] = (
+    # Common tech stack mentioned in Indian AI/ML engineering interviews
+    "FastAPI", "LangChain", "LangGraph", "ChromaDB", "FAISS", "RAG",
+    "PyTorch", "TensorFlow", "Scikit-learn", "Hugging Face",
+    "Docker", "Kubernetes", "PostgreSQL", "Redis", "Celery",
+    "GPT", "LLM", "embedding", "vector database", "fine-tuning",
+    "retrieval augmented generation", "multi-agent", "microservices",
+    # Recruiting context
+    "RecruiteAI", "Crownstack",
+)
+
+def _build_deepgram_keyterms(
+    *,
+    resume,
+    job,
+    questions: list | None = None,
+    max_terms: int = 50,
+) -> list[str]:
+    """Build a deduplicated keyterm list from resume skills + job context.
+
+    Nova-3 keyterm prompting boosts recognition of domain-specific vocabulary.
+    Candidate names + tech stack from their own resume are the highest-value
+    terms — Deepgram often mispronounces/misrecognises Indian names and
+    niche framework names without hints.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+
+    def add(term: str) -> None:
+        cleaned = term.strip()
+        if not cleaned or len(result) >= max_terms:
+            return
+        key = cleaned.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        result.append(cleaned)
+
+    # 1. Candidate first name — highest priority (Indian names often misrecognised)
+    if resume and resume.candidate_name:
+        first = resume.candidate_name.strip().split()[0]
+        if len(first) > 2:
+            add(first)
+
+    # 2. Resume skills (what the candidate will actually say)
+    if resume and resume.parsed_data:
+        raw_skills = resume.parsed_data.get("skills", [])
+        for s in raw_skills:
+            name = s if isinstance(s, str) else (s.get("name") if isinstance(s, dict) else "")
+            if name:
+                add(name)
+
+    # 3. Job title keywords
+    if job and job.title:
+        for word in job.title.split():
+            if len(word) > 3:
+                add(word)
+
+    # 4. Base universal tech terms (fill remaining budget)
+    for term in _BASE_KEYTERMS:
+        add(term)
+
+    return result
+
+
 class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
     """Voice runtime that uses Deepgram for STT/TTS and OpenAI for turn reasoning."""
 
@@ -805,12 +874,26 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         finalized_segments: list[str] = []
 
         encoding = "linear16" if provider in _L16_PROVIDERS else "mulaw"
+
+        # Build nova-3 keyterms from resume skills + job context.
+        # Up to 50 terms keeps us well under the 500-token limit.
+        keyterms = _build_deepgram_keyterms(
+            resume=resume,
+            job=job,
+            questions=questions,
+        )
+        keyterm_params = "".join(
+            f"&keyterm={t.replace(' ', '%20')}" for t in keyterms
+        )
+
         stt_url = (
             f"wss://api.deepgram.com/v1/listen?model={settings.DEEPGRAM_STT_MODEL}"
+            f"&language={settings.DEEPGRAM_STT_LANGUAGE}"
             f"&encoding={encoding}&sample_rate=8000&interim_results=true"
             f"&vad_events=true&endpointing={settings.PIPELINE_STT_ENDPOINTING_MS}"
             f"&utterance_end_ms={settings.PIPELINE_STT_UTTERANCE_END_MS}"
-            "&punctuate=true&smart_format=true"
+            f"&punctuate=true&smart_format=true"
+            f"{keyterm_params}"
         )
         stt_headers = {"Authorization": f"Token {self.deepgram_api_key}"}
 

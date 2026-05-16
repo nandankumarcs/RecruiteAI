@@ -43,7 +43,8 @@ class Settings(BaseSettings):
 
     # --- Deepgram ---
     DEEPGRAM_API_KEY: str = ""
-    DEEPGRAM_STT_MODEL: str = "nova-2-phonecall"
+    DEEPGRAM_STT_MODEL: str = "nova-3"
+    DEEPGRAM_STT_LANGUAGE: str = "en-IN"   # Indian English accent model
     DEEPGRAM_TTS_MODEL: str = "aura-asteria-en"
     DEEPGRAM_STT_COST_PER_MINUTE_USD: float = 0.0043
     DEEPGRAM_TTS_COST_PER_1K_CHARS_USD: float = 0.03
@@ -63,9 +64,9 @@ class Settings(BaseSettings):
     SARVAM_TTS_COMPLETION_TIMEOUT_SECONDS: float = 15.0
     SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS: float = 30.0
     PIPELINE_TTS_JITTER_BUFFER_MS: int = 200
-    PIPELINE_STT_ENDPOINTING_MS: int = 700
-    PIPELINE_STT_UTTERANCE_END_MS: int = 1400
-    PIPELINE_USER_FRAGMENT_GRACE_MS: int = 900
+    PIPELINE_STT_ENDPOINTING_MS: int = 1500   # 500→1500: covers natural thinking pauses
+    PIPELINE_STT_UTTERANCE_END_MS: int = 2500  # 1000→2500: gives candidate time to finish
+    PIPELINE_USER_FRAGMENT_GRACE_MS: int = 1500 # 900→1500: buffer after speech_final
 
     # --- Twilio Telephony ---
     TWILIO_ACCOUNT_SID: str = ""
