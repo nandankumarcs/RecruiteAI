@@ -328,6 +328,10 @@ class TelephonyService:
             self._provider = TwilioTelephonyProvider()
         elif provider_name == "exotel":
             self._provider = ExotelTelephonyProvider()
+        elif provider_name == "browser":
+            # Deferred import keeps simulator code out of the import graph when unused.
+            from app.services.telephony_browser import BrowserTelephonyProvider
+            self._provider = BrowserTelephonyProvider()
         else:
             self._provider = MockTelephonyProvider()
 

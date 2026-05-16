@@ -93,6 +93,11 @@ def estimate_telephony_cost(*, provider: str, duration_seconds: int | None) -> f
         rate = settings.TWILIO_ESTIMATED_COST_PER_MINUTE_USD
     elif provider == "exotel":
         rate = settings.EXOTEL_ESTIMATED_COST_PER_MINUTE_USD
+    elif provider == "browser":
+        # Dev simulator — no telephony cost. Explicit branch (rather than relying
+        # on the default 0.0) so a future "default cost" addition can't silently
+        # start charging for simulator calls.
+        rate = 0.0
     return _round_currency(minutes * rate)
 
 

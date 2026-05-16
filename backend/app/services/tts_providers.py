@@ -21,6 +21,9 @@ from app.debug_log import log_debug
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# Telephony providers that consume L16 8kHz PCM (vs Twilio's μ-law).
+_L16_PROVIDERS = ("exotel", "browser")
+
 
 class BaseTTSProvider(Protocol):
     """Protocol for TTS providers."""
@@ -89,7 +92,7 @@ class DeepgramTTSProvider:
             log_debug(f"[{tts_run_id}] ERROR: Missing Deepgram API key")
             raise ValueError("Missing Deepgram API key")
 
-        encoding = "linear16" if telephony_provider == "exotel" else "mulaw"
+        encoding = "linear16" if telephony_provider in _L16_PROVIDERS else "mulaw"
         tts_url = (
             f"https://api.deepgram.com/v1/speak?model={self.model}"
             f"&encoding={encoding}&sample_rate=8000"
@@ -208,10 +211,13 @@ class SarvamTTSProvider:
             log_debug(f"[{tts_run_id}] ERROR: Missing Sarvam API key")
             raise ValueError("Missing Sarvam API key")
 
-        # For now, we only support Exotel with linear16
-        # Twilio support can be added later with mulaw conversion
-        if telephony_provider != "exotel":
-            raise ValueError(f"Sarvam TTS currently only supports Exotel, got: {telephony_provider}")
+        # For now, Sarvam TTS only supports L16-format providers (Exotel, browser simulator).
+        # Twilio support can be added later with μ-law conversion.
+        if telephony_provider not in _L16_PROVIDERS:
+            raise ValueError(
+                f"Sarvam TTS currently only supports L16-format providers ({_L16_PROVIDERS}), "
+                f"got: {telephony_provider}"
+            )
 
         if self.transport == "websocket":
             async for chunk in self._synthesize_websocket_stream(

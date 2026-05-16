@@ -7,6 +7,8 @@ import { Dashboard } from "@/pages/Dashboard";
 import { Jobs } from "@/pages/Jobs";
 import { JobDetail } from "@/pages/JobDetail";
 import { CallDetail } from "@/pages/CallDetail";
+import { ResumeEdit } from "@/pages/ResumeEdit";
+import { SimulatorCall } from "@/pages/SimulatorCall";
 import { useAuth } from "@/context/AuthContext";
 
 function App() {
@@ -24,7 +26,10 @@ function App() {
             <Route path="/jobs" element={<Jobs />} />
             <Route path="/jobs/:jobId" element={<JobDetail />} />
             <Route path="/calls/:callId" element={<CallDetail />} />
+            <Route path="/resumes/:resumeId/edit" element={<ResumeEdit />} />
           </Route>
+          {/* Browser-telephony simulator: full-screen, no AppLayout chrome. */}
+          <Route path="/sim/call/:callId" element={<SimulatorCall />} />
         </Route>
         
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

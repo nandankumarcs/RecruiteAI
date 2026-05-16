@@ -211,8 +211,10 @@ async def start_call(
     await _check_job_questions(db=db, job_id=job.id)
 
 
+    # `browser` provider also needs PUBLIC_URL to be reachable so the WebSocket
+    # URL it advertises actually works. `mock` is exempt because it never opens a stream.
     if (
-        getattr(telephony, "provider_name", "") in ("twilio", "exotel")
+        getattr(telephony, "provider_name", "") in ("twilio", "exotel", "browser")
         and not getattr(telephony, "enable_mock_progression", False)
     ):
         await _verify_public_webhook_endpoint()
@@ -272,7 +274,14 @@ async def start_call(
     if getattr(telephony, "enable_mock_progression", False) and outbound.provider == "mock":
         asyncio.create_task(_simulate_mock_call_progress(call.id))
 
-    return CallStartResponse(provider=outbound.provider, call=call)
+    # For the browser simulator, hand the dashboard a URL it can open in a new tab
+    # so the candidate can "take the call". Only populated when this is a sim call.
+    join_url = None
+    if outbound.provider == "browser":
+        frontend = settings.FRONTEND_URL.rstrip("/")
+        join_url = f"{frontend}/sim/call/{call.id}"
+
+    return CallStartResponse(provider=outbound.provider, call=call, join_url=join_url)
 
 
 ACTIVE_CALL_STATUSES = ("pending", "queued", "ringing", "in_progress")
@@ -389,6 +398,21 @@ async def get_call_recording(
         raise NotFoundError(resource="Call")
     if not call.recording_url:
         raise NotFoundError(resource="Recording")
+
+    # Browser simulator recordings live on local disk, written by
+    # SimulatorCallRecorder. Short-circuit before the external-URL fetch path
+    # below, which would otherwise try to fetch our own /api/calls/.../recording
+    # URL recursively.
+    if call.provider == "browser":
+        from pathlib import Path
+        if not call.recording_path:
+            raise NotFoundError(resource="Recording")
+        local_path = Path(settings.STORAGE_LOCAL_PATH) / call.recording_path
+        if not local_path.exists():
+            raise NotFoundError(resource="Recording")
+        with open(local_path, "rb") as f:
+            content = f.read()
+        return Response(content=content, media_type="audio/wav")
 
     recording_url = call.recording_url
     if not recording_url.endswith(".mp3") and not recording_url.endswith(".wav"):

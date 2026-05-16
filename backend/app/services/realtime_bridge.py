@@ -23,6 +23,10 @@ from starlette.websockets import WebSocketState
 from openai import AsyncOpenAI
 from sqlalchemy import select
 
+# Providers that speak the L16 8kHz PCM wire format (vs Twilio's μ-law).
+# Twilio is the only non-L16 provider; everything else uses Exotel's framing.
+_L16_PROVIDERS = ("exotel", "browser")
+
 from app.config import get_settings
 from app.database import async_session_factory
 from app.models.call import Call
@@ -755,7 +759,7 @@ class RealtimeBridge:
                                                 )
                                                 await session.commit()
                                     payload = delta
-                                    if provider == "exotel":
+                                    if provider in _L16_PROVIDERS:
                                         try:
                                             pcmu_bytes = base64.b64decode(delta)
                                             # Transcode PCMU (8kHz) to L16 (8kHz, Mono)
@@ -989,7 +993,7 @@ class RealtimeBridge:
                             media = data.get("media", {})
                             audio_payload = media.get("payload")
                             if audio_payload:
-                                if provider == "exotel":
+                                if provider in _L16_PROVIDERS:
                                     try:
                                         l16_bytes = base64.b64decode(audio_payload)
                                         pcmu_bytes = audioop.lin2ulaw(l16_bytes, 2)
@@ -1047,7 +1051,7 @@ class RealtimeBridge:
 
     @staticmethod
     def _build_audio_event(*, provider: str, stream_id: str, payload: str) -> dict:
-        if provider == "exotel":
+        if provider in _L16_PROVIDERS:
             return {
                 "event": "media",
                 "stream_sid": stream_id,
@@ -1063,7 +1067,7 @@ class RealtimeBridge:
 
     @staticmethod
     def _build_clear_audio_event(*, provider: str, stream_id: str) -> dict:
-        if provider == "exotel":
+        if provider in _L16_PROVIDERS:
             return {"event": "clear", "stream_sid": stream_id}
         return {"event": "clear", "streamSid": stream_id}
 

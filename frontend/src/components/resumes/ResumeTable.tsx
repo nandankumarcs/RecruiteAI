@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { FileText, Mail, Phone, PhoneCall, Trash2, User } from "lucide-react";
+import { FileText, Mail, Pencil, Phone, PhoneCall, Trash2, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +28,7 @@ interface ResumeTableProps {
   activeCallsByResumeId: Record<string, CallRecord | undefined>;
   onDelete: (id: string) => void;
   onView: (resume: Resume) => void;
+  onEdit: (resume: Resume) => void;
   onStartCall: (resume: Resume) => void;
   sortBy: string;
   sortOrder: "asc" | "desc";
@@ -55,6 +56,7 @@ export function ResumeTable({
   activeCallsByResumeId,
   onDelete,
   onView,
+  onEdit,
   onStartCall,
   sortBy,
   sortOrder,
@@ -193,14 +195,25 @@ export function ResumeTable({
             size="sm"
             className="h-8 w-8 p-0 rounded-lg hover:bg-primary/10 hover:text-primary"
             onClick={() => onView(resume)}
+            title="View details"
           >
             <FileText className="h-4 w-4" />
           </Button>
           <Button
             variant="ghost"
             size="sm"
+            className="h-8 w-8 p-0 rounded-lg hover:bg-primary/10 hover:text-primary"
+            onClick={() => onEdit(resume)}
+            title="Edit resume"
+          >
+            <Pencil className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             className="h-8 w-8 p-0 rounded-lg hover:bg-destructive/10 hover:text-destructive"
             onClick={() => onDelete(resume.id)}
+            title="Delete"
           >
             <Trash2 className="h-4 w-4" />
           </Button>

@@ -913,6 +913,160 @@ class ResumeParserAgent:
         }
 
 
+def serialize_structured_resume(parsed: dict | None, resume_model=None) -> str:
+    """Build a clean text representation of a structured resume (v2 or v3).
+
+    Used by the PATCH endpoint so the recomputed matching_score reflects
+    user edits rather than the original PDF text.
+    """
+    p = parsed or {}
+    lines: list[str] = []
+
+    # Contact
+    if resume_model is not None:
+        for val in [
+            getattr(resume_model, "candidate_name", None),
+        ]:
+            if val:
+                lines.append(f"Name: {val}")
+        contact = p.get("contact") or {}
+        if contact.get("headline"):
+            lines.append(f"Title: {contact['headline']}")
+        if getattr(resume_model, "email", None):
+            lines.append(f"Email: {resume_model.email}")
+        if getattr(resume_model, "phone_number", None):
+            lines.append(f"Phone: {resume_model.phone_number}")
+        if contact.get("location"):
+            lines.append(f"Location: {contact['location']}")
+        lines.append("")
+
+    # Summary
+    summary = p.get("summary", "").strip()
+    if summary:
+        lines += ["Summary", summary, ""]
+
+    # Skills (flat list)
+    skills = p.get("skills") or []
+    if skills:
+        if isinstance(skills[0], dict):
+            skill_names = [s.get("name", "") for s in skills if s.get("name")]
+        else:
+            skill_names = [str(s) for s in skills if s]
+        lines.append("Skills: " + ", ".join(skill_names))
+
+    # Skill categories
+    for cat in p.get("skill_categories") or []:
+        items = cat.get("items") or []
+        if items:
+            lines.append(f"{cat.get('category', 'Skills')}: " + ", ".join(items))
+    if skills or p.get("skill_categories"):
+        lines.append("")
+
+    # Languages
+    for lang in p.get("languages") or []:
+        lines.append(f"Language: {lang.get('language','')} — {lang.get('proficiency','')}")
+
+    # Experience
+    if p.get("experience"):
+        lines += ["", "Experience"]
+        for exp in p["experience"]:
+            title = exp.get("role_title") or exp.get("title", "")
+            company = exp.get("company_name") or exp.get("company", "")
+            from_d = exp.get("from_date") or exp.get("start_date", "")
+            to_d = "Present" if exp.get("is_current") else (exp.get("to_date") or exp.get("end_date", ""))
+            emp_type = exp.get("employment_type") or ""
+            parts = [p for p in [title, company, emp_type] if p]
+            date_str = f"{from_d} – {to_d}".strip(" –")
+            lines.append(f"• {' | '.join(parts)}" + (f" ({date_str})" if date_str else ""))
+            for bullet in exp.get("bullets") or exp.get("tasks_performed") or []:
+                lines.append(f"    - {bullet}")
+            techs = exp.get("technologies") or []
+            if techs:
+                lines.append(f"    Tech: {', '.join(techs)}")
+
+    # Education
+    if p.get("education"):
+        lines += ["", "Education"]
+        for edu in p["education"]:
+            degree = edu.get("degree_type") or edu.get("degree") or ""
+            field = edu.get("field_of_study") or edu.get("field") or ""
+            institution = edu.get("institution", "")
+            end = edu.get("end_date", "")
+            gpa = edu.get("gpa") or edu.get("score") or ""
+            honors = edu.get("honors") or ""
+            parts = [p for p in [degree, field, institution, end] if p]
+            extra = " | ".join(x for x in [gpa, honors] if x)
+            lines.append("• " + " — ".join(parts) + (f" ({extra})" if extra else ""))
+            for course in edu.get("relevant_coursework") or []:
+                lines.append(f"    Coursework: {course}")
+
+    # Projects
+    if p.get("projects"):
+        lines += ["", "Projects"]
+        for prj in p["projects"]:
+            lines.append(f"• {prj.get('name', '')}")
+            for bullet in prj.get("bullets") or []:
+                lines.append(f"    - {bullet}")
+            techs = prj.get("technologies") or []
+            if techs:
+                lines.append(f"    Tech: {', '.join(techs)}")
+
+    # Certifications
+    if p.get("certifications"):
+        lines += ["", "Certifications"]
+        for cert in p["certifications"]:
+            issuer = cert.get("issuer") or ""
+            date = cert.get("issue_date") or cert.get("year") or ""
+            parts = [cert.get("name", "")]
+            if issuer:
+                parts.append(issuer)
+            if date:
+                parts.append(date)
+            lines.append("• " + " — ".join(parts))
+
+    # Awards
+    if p.get("awards"):
+        lines += ["", "Awards & Achievements"]
+        for award in p["awards"]:
+            lines.append(f"• {award.get('title','')} — {award.get('issuer','')}")
+
+    # Volunteer
+    if p.get("volunteer"):
+        lines += ["", "Volunteer Experience"]
+        for vol in p["volunteer"]:
+            lines.append(f"• {vol.get('role','')} at {vol.get('organization','')}")
+            for bullet in vol.get("bullets") or []:
+                lines.append(f"    - {bullet}")
+
+    # Publications
+    if p.get("publications"):
+        lines += ["", "Publications"]
+        for pub in p["publications"]:
+            lines.append(f"• {pub.get('title','')} — {pub.get('publisher','')}")
+
+    # Courses
+    if p.get("courses"):
+        lines += ["", "Courses & Training"]
+        for course in p["courses"]:
+            lines.append(f"• {course.get('name','')} ({course.get('provider','')})")
+
+    # Interests
+    interests = p.get("interests") or []
+    if interests:
+        lines += ["", "Interests: " + ", ".join(interests)]
+
+    # Custom sections
+    for cs in p.get("custom_sections") or []:
+        title = cs.get("section_title") or "Additional"
+        lines += ["", title]
+        for item in cs.get("items") or []:
+            t = item.get("title") or ""
+            desc = item.get("description") or ""
+            lines.append(f"• {t}: {desc}".rstrip(": "))
+
+    return "\n".join(lines).strip()
+
+
 def get_resume_parser_agent() -> ResumeParserAgent:
     """Dependency factory for the resume parser agent."""
     return ResumeParserAgent()

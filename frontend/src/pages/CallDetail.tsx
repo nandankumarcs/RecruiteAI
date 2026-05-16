@@ -517,6 +517,42 @@ export function CallDetail() {
         />
       )}
 
+      {/* Browser-simulator shortcut — lets devs (re)open the iPhone simulator popup
+          for any active browser-provider call directly from the call detail page. */}
+      {call.provider === "browser" &&
+        ["queued", "ringing", "in_progress"].includes(call.status) && (
+        <div className="flex items-center gap-3 rounded-xl border border-indigo-500/20 bg-indigo-500/5 px-5 py-4">
+          <PhoneCall className="h-5 w-5 text-indigo-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-indigo-300">
+              Browser Simulator active
+            </p>
+            <p className="text-xs text-indigo-400/70">
+              Open the candidate-side call window to speak or listen.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            className="shrink-0 bg-indigo-600 hover:bg-indigo-500 text-white"
+            onClick={() => {
+              const url = `${window.location.origin}/sim/call/${call.id}`;
+              const W = 480, H = 960;
+              const left = Math.round((screen.width  - W) / 2);
+              const top  = Math.round((screen.height - H) / 2);
+              const popup = window.open(
+                url,
+                "recruiteai_simulator",
+                `width=${W},height=${H},left=${left},top=${top},resizable=no,scrollbars=no,toolbar=no,menubar=no,location=no,status=no`,
+              );
+              if (popup) popup.focus();
+              else window.open(url, "_blank", "noopener");
+            }}
+          >
+            Open Simulator ↗
+          </Button>
+        </div>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-6">
           <Card className="border-border/50 bg-card/70">

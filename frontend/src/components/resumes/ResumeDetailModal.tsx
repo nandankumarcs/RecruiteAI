@@ -1,15 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Briefcase,
-  FileAudio,
   FileText,
   Mail,
   Phone,
   Sparkles,
   Calendar,
   PhoneCall,
-  FileQuestion,
   Loader2,
 } from "lucide-react";
 
@@ -26,22 +24,10 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 import type { Resume } from "./ResumeTable";
 
-interface InterviewQuestion {
-  id: string;
-  question_text: string;
-  category: string | null;
-  difficulty: number;
-  order_index: number;
-}
-
-interface QuestionSetResponse {
-  schema_version: string;
-  questions: InterviewQuestion[];
-}
-
 interface CallStartResponse {
   provider: string;
   call: CallRecord;
+  join_url?: string | null;
 }
 
 interface ResumeDetailModalProps {
@@ -52,13 +38,6 @@ interface ResumeDetailModalProps {
   onCallUpdate?: (call: CallRecord) => void;
 }
 
-const difficultyClasses: Record<number, string> = {
-  1: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20",
-  2: "bg-teal-500/10 text-teal-600 border-teal-500/20",
-  3: "bg-amber-500/10 text-amber-600 border-amber-500/20",
-  4: "bg-orange-500/10 text-orange-600 border-orange-500/20",
-  5: "bg-rose-500/10 text-rose-600 border-rose-500/20",
-};
 
 const recommendationClasses: Record<string, string> = {
   advance: "bg-emerald-500 text-white border-none",
@@ -68,6 +47,40 @@ const recommendationClasses: Record<string, string> = {
 };
 
 import { useCallWebSocket } from "@/hooks/useCallWebSocket";
+
+/** Open the browser-telephony simulator as a centred popup sized for the
+ *  iPhone 17 Pro Max mockup. Falls back to a full tab if the popup is blocked,
+ *  and calls `onBlocked` so the UI can surface a manual-open affordance. */
+function openSimulatorPopup(
+  url: string,
+  onBlocked?: (url: string | null) => void,
+) {
+  const W = 480;   // wide enough to show phone frame + OS chrome
+  const H = 960;   // phone frame 870 px + OS title bar ~28 px + safe margin
+  const left = Math.round((screen.width  - W) / 2);
+  const top  = Math.round((screen.height - H) / 2);
+  const features = [
+    `width=${W}`,
+    `height=${H}`,
+    `left=${left}`,
+    `top=${top}`,
+    "resizable=no",
+    "scrollbars=no",
+    "toolbar=no",
+    "menubar=no",
+    "location=no",
+    "status=no",
+  ].join(",");
+  const popup = window.open(url, "recruiteai_simulator", features);
+  if (!popup) {
+    // Popup blocked — open in a new tab as last resort and let the caller show a retry UI.
+    window.open(url, "_blank", "noopener");
+    onBlocked?.(url);
+  } else {
+    onBlocked?.(null); // clear any previous blocked state
+    popup.focus();
+  }
+}
 
 
 export function ResumeDetailModal({
@@ -79,14 +92,12 @@ export function ResumeDetailModal({
 }: ResumeDetailModalProps) {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [questions, setQuestions] = useState<InterviewQuestion[]>([]);
-  const [isQuestionsLoading, setIsQuestionsLoading] = useState(false);
-  const [questionsError, setQuestionsError] = useState<string | null>(null);
-
   const [isStartingCall, setIsStartingCall] = useState(false);
   const [callError, setCallError] = useState<string | null>(null);
   const [startedCallInternal, setStartedCallInternal] = useState<CallRecord | null>(activeCall ?? null);
   const [editablePhoneNumber, setEditablePhoneNumber] = useState(resume?.phone_number || "");
+  // Populated when the browser blocked the simulator popup — lets the user open it manually.
+  const [blockedSimUrl, setBlockedSimUrl] = useState<string | null>(null);
 
   const { lastCall } = useCallWebSocket(isOpen ? (startedCallInternal?.id || activeCall?.id) : undefined, onCallUpdate);
   const startedCall = lastCall ?? startedCallInternal;
@@ -96,32 +107,12 @@ export function ResumeDetailModal({
       setEditablePhoneNumber(resume.phone_number || "");
     }
 
-    if (!resume || !isOpen || resume.status !== "parsed") {
-      setQuestions([]);
-      setQuestionsError(null);
+    if (!resume || !isOpen) {
       setStartedCallInternal(activeCall ?? null);
       setCallError(null);
       return;
     }
 
-    const loadQuestions = async () => {
-      setIsQuestionsLoading(true);
-      setQuestionsError(null);
-
-      try {
-        const response = await api.get<InterviewQuestion[]>(
-          `/jobs/${resume.job_id}/questions`
-        );
-        setQuestions(response.data || []);
-      } catch (error) {
-        console.error("Failed to load interview questions", error);
-        setQuestionsError("Unable to load interview questions right now.");
-      } finally {
-        setIsQuestionsLoading(false);
-      }
-    };
-
-    void loadQuestions();
   }, [resume, isOpen, activeCall]);
 
 
@@ -146,10 +137,17 @@ export function ResumeDetailModal({
       );
       setStartedCallInternal(response.data.call);
       onCallUpdate?.(response.data.call);
+      // Browser simulator: open the candidate-side call page as a centred popup
+      // that's sized for the iPhone 17 Pro Max mockup (415 px wide phone + chrome).
+      if (response.data.join_url) {
+        openSimulatorPopup(response.data.join_url, setBlockedSimUrl);
+      }
       toast({
         variant: "success",
         title: "Call started",
-        description: "The interview call has been queued successfully.",
+        description: response.data.join_url
+          ? "Simulator opening — accept the call in the new window."
+          : "The interview call has been queued successfully.",
       });
     } catch (error) {
       console.error("Failed to start interview call", error);
@@ -190,9 +188,6 @@ export function ResumeDetailModal({
               </div>
             </div>
           </div>
-          <Badge variant="outline" className="hidden sm:flex bg-background/50 border-border/40 px-3 py-1 font-bold text-[10px] uppercase tracking-tighter text-muted-foreground">
-            ID: {resume.id.slice(0, 8)}
-          </Badge>
         </div>
 
         {/* Match Insights Header (New) */}
@@ -362,6 +357,17 @@ export function ResumeDetailModal({
                           {callError}
                         </div>
                       )}
+                      {blockedSimUrl && (
+                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-400 flex items-center justify-between gap-3">
+                          <span>Popup was blocked by your browser.</span>
+                          <button
+                            className="font-bold underline underline-offset-2 whitespace-nowrap hover:text-amber-300 transition"
+                            onClick={() => openSimulatorPopup(blockedSimUrl, setBlockedSimUrl)}
+                          >
+                            Open Simulator ↗
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -446,58 +452,6 @@ export function ResumeDetailModal({
                 </section>
               )}
 
-              {/* Questions Section */}
-              <section className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-muted-foreground">
-                    <FileQuestion className="h-4 w-4" />
-                    Interview Strategy
-                  </div>
-                </div>
-
-
-                {questionsError && (
-                  <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-4 py-3 text-xs font-bold uppercase tracking-wider text-destructive">
-                    {questionsError}
-                  </div>
-                )}
-
-                {questions.length > 0 ? (
-                  <div className="grid gap-5">
-                    {questions.map((question, idx) => (
-                      <div key={question.id} className="group relative rounded-xl border border-border/40 bg-muted/5 p-6 transition-all hover:bg-background hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 active:scale-[0.99]">
-                        <div className="flex items-start gap-4">
-                          <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xs font-black">
-                            {idx + 1}
-                          </div>
-                          <div className="space-y-3 flex-1">
-                            <div className="flex items-center gap-2">
-                              <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest bg-background/50 border-border/60">
-                                {question.category || "general"}
-                              </Badge>
-                              <Badge className={cn("text-[9px] font-black uppercase tracking-widest shadow-sm", difficultyClasses[question.difficulty])}>
-                                LVL {question.difficulty}
-                              </Badge>
-                            </div>
-                            <p className="text-sm font-bold leading-relaxed tracking-tight text-foreground/90 group-hover:text-foreground transition-colors">
-                              {question.question_text}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-xl border-2 border-dashed border-border/40 p-12 text-center bg-muted/5">
-                    <div className="w-16 h-16 bg-muted/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-border/40">
-                      <FileQuestion className="h-8 w-8 text-muted-foreground/30" />
-                    </div>
-                    <p className="text-xs font-black text-muted-foreground uppercase tracking-[0.2em]">No questions added to this job yet</p>
-                    <p className="text-[10px] text-muted-foreground/60 font-medium mt-2">Add manual questions in the Job Strategy tab.</p>
-                  </div>
-                )}
-
-              </section>
 
               {/* Work History */}
               {experience.length > 0 && (
@@ -553,12 +507,27 @@ export function ResumeDetailModal({
         </div>
 
         <div className="flex items-center justify-between px-8 py-4 border-t border-border/40 bg-muted/30">
-          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-muted-foreground/50">
-            <span className="h-1.5 w-1.5 rounded-full bg-primary/40 animate-pulse" />
-            LIVE ANALYSIS • V1.2.0
-          </div>
-          <Button 
-            variant="ghost" 
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-2 text-[11px] font-bold text-muted-foreground hover:text-foreground hover:bg-background border border-border/40 rounded-lg h-9 px-4"
+            onClick={async () => {
+              try {
+                const resp = await api.get(`/resumes/${resume.id}/file`, { responseType: "blob" });
+                const url = URL.createObjectURL(resp.data);
+                window.open(url, "_blank", "noopener");
+                // revoke after 60s so memory isn't held forever
+                setTimeout(() => URL.revokeObjectURL(url), 60_000);
+              } catch {
+                toast({ variant: "error", title: "Could not load resume file" });
+              }
+            }}
+          >
+            <FileText className="h-3.5 w-3.5" />
+            View original resume
+          </Button>
+          <Button
+            variant="ghost"
             onClick={onClose}
             className="rounded-lg font-black uppercase tracking-widest text-[10px] hover:bg-background h-10 px-6 border border-border/40"
           >

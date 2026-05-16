@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useNavigate, useParams, Link } from "react-router-dom";
 import { Calendar, ChevronLeft, MapPin, PhoneCall, UploadCloud } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -42,6 +42,7 @@ const tabs: Array<{ key: DetailTab; label: string }> = [
 export function JobDetail() {
   const { toast } = useToast();
   const { jobId } = useParams<{ jobId: string }>();
+  const navigate = useNavigate();
   const [job, setJob] = useState<Job | null>(null);
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [calls, setCalls] = useState<CallRecord[]>([]);
@@ -347,6 +348,7 @@ export function JobDetail() {
                     activeCallsByResumeId={activeCallsByResumeId}
                     onDelete={(id) => setResumeToDelete(id)}
                     onView={setViewingResume}
+                    onEdit={(r) => navigate(`/resumes/${r.id}/edit`)}
                     onStartCall={handleStartCall}
                     sortBy={sortBy}
                     sortOrder={sortOrder}

@@ -22,6 +22,9 @@ from deepgram import (
 
 from app.debug_log import log_debug
 
+# Providers that speak the L16 8kHz PCM wire format (vs Twilio's μ-law).
+_L16_PROVIDERS = ("exotel", "browser")
+
 from app.config import get_settings
 from app.models.call import Call
 from app.services.observability import (
@@ -140,7 +143,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
 
     @staticmethod
     def _audio_frame_settings(provider: str) -> tuple[int, float]:
-        if provider == "exotel":
+        if provider in _L16_PROVIDERS:
             return 320, 0.020
         return 160, 0.020
 
@@ -801,7 +804,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         stop_event = asyncio.Event()
         finalized_segments: list[str] = []
 
-        encoding = "linear16" if provider == "exotel" else "mulaw"
+        encoding = "linear16" if provider in _L16_PROVIDERS else "mulaw"
         stt_url = (
             f"wss://api.deepgram.com/v1/listen?model={settings.DEEPGRAM_STT_MODEL}"
             f"&encoding={encoding}&sample_rate=8000&interim_results=true"

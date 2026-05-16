@@ -25,7 +25,12 @@ from app.database import get_db
 from app.models.job import Job
 from app.models.resume import Resume
 from app.models.user import User
-from app.schemas.resume import PaginatedResumesResponse, ResumeDetailResponse, ResumeResponse
+from app.schemas.resume import (
+    PaginatedResumesResponse,
+    ResumeDetailResponse,
+    ResumeResponse,
+    ResumeUpdateRequest,
+)
 from app.services.storage import StorageProvider, get_storage_provider
 from app.services.resume_session_manager import get_session_manager, ResumeSessionManager
 from app.services.resume_progress_emitter import ResumeProgressEmitter
@@ -405,6 +410,124 @@ async def get_resume(
     if not resume:
         raise NotFoundError(resource="Resume")
     return resume
+
+
+@router.patch("/api/resumes/{resume_id}", response_model=ResumeDetailResponse)
+async def update_resume(
+    resume_id: uuid.UUID,
+    payload: ResumeUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    parser: ResumeParserAgent = Depends(get_resume_parser_agent),
+):
+    """Update editable resume fields (parsed_data, contact info).
+
+    Optionally re-runs the candidate-vs-JD matcher after save so the
+    matching_score reflects any changes the user made to the content.
+    """
+    from app.agents.resume_parser_agent import serialize_structured_resume
+
+    result = await db.execute(
+        select(Resume)
+        .join(Job, Resume.job_id == Job.id)
+        .where(Resume.id == resume_id, Job.user_id == current_user.id)
+    )
+    resume = result.scalar_one_or_none()
+    if not resume:
+        raise NotFoundError(resource="Resume")
+
+    # Apply top-level field updates (only when explicitly provided)
+    if payload.candidate_name is not None:
+        resume.candidate_name = payload.candidate_name.strip() or None
+    if payload.phone_number is not None:
+        resume.phone_number = payload.phone_number.strip() or None
+    if payload.email is not None:
+        resume.email = payload.email.strip() or None
+
+    # Replace parsed_data with the v3 payload; preserve schema_version
+    if payload.parsed_data is not None:
+        new_data = payload.parsed_data.model_dump(mode="json")
+        new_data["schema_version"] = "resume.v3"
+        resume.parsed_data = new_data
+
+    # Recalculate match score using serialized structured text so edits are reflected
+    if payload.recalculate_match and resume.parsed_data:
+        job_result = await db.execute(select(Job).where(Job.id == resume.job_id))
+        job = job_result.scalar_one_or_none()
+        if job and getattr(job, "description", None):
+            resume_text = serialize_structured_resume(resume.parsed_data, resume)
+            try:
+                evaluation = await parser.evaluate_candidate_against_jd(
+                    resume_text, job.description
+                )
+                resume.matching_score = evaluation.matching_score
+                resume.match_explanation = evaluation.explanation
+            except Exception as exc:
+                logger.warning(
+                    "Match recalculation failed for resume=%s: %s", resume_id, exc
+                )
+                # Don't fail the save — matching score is best-effort
+
+    await db.commit()
+    await db.refresh(resume)
+    return resume
+
+
+@router.get("/api/resumes/{resume_id}/file")
+async def download_resume_file(
+    resume_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Serve the original uploaded resume file (PDF or DOCX) for authenticated preview."""
+    from pathlib import Path
+    from fastapi.responses import Response as FileResponse
+
+    result = await db.execute(
+        select(Resume)
+        .join(Job, Resume.job_id == Job.id)
+        .where(Resume.id == resume_id, Job.user_id == current_user.id)
+    )
+    resume = result.scalar_one_or_none()
+    if not resume:
+        raise NotFoundError(resource="Resume")
+
+    # file_path in DB may be stored as a relative path like "./uploads/resumes/..."
+    # Resolve it: try as-is first, then relative to STORAGE_LOCAL_PATH base.
+    from app.config import get_settings as _get_settings
+    _settings = _get_settings()
+    raw = resume.file_path
+    # Strip leading "./" or "uploads/" prefix so we can re-anchor to the configured base
+    clean = raw.lstrip("./")           # e.g. "uploads/resumes/job/file.pdf"
+    if clean.startswith("uploads/"):
+        clean = clean[len("uploads/"):]  # e.g. "resumes/job/file.pdf"
+
+    candidates = [
+        Path(raw),                                              # as stored (may be absolute)
+        Path(_settings.STORAGE_LOCAL_PATH) / clean,            # base + stripped
+        Path(_settings.STORAGE_LOCAL_PATH) / Path(raw).name,   # base + filename only
+    ]
+    file_path = next((p for p in candidates if p.exists()), None)
+    if file_path is None:
+        raise NotFoundError(resource="Resume file")
+
+    content_type_map = {
+        "pdf":  "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc":  "application/msword",
+    }
+    ext = (resume.file_type or file_path.suffix.lstrip(".")).lower()
+    content_type = content_type_map.get(ext, "application/octet-stream")
+
+    with open(file_path, "rb") as f:
+        content = f.read()
+
+    filename = file_path.name
+    return FileResponse(
+        content=content,
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @router.delete("/api/resumes/{resume_id}", status_code=204)

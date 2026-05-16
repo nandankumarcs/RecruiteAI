@@ -62,6 +62,9 @@ class CallStartResponse(BaseModel):
 
     provider: str
     call: CallResponse
+    # Populated when the configured telephony provider is the browser simulator —
+    # the URL the dashboard should open so the candidate can "take the call".
+    join_url: str | None = None
 
 
 class CallEvaluationResponse(BaseModel):
