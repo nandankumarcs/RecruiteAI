@@ -182,6 +182,44 @@ def _analyze_transcript_evidence(transcript: str | None, *, call: "Call | None" 
     if user_turns and fragment_like_turns >= max(2, len(user_turns) // 2):
         transcript_health_flags.append("high_fragment_ratio")
 
+    # Clarification requests — candidate asking to repeat/clarify a question.
+    # These are NORMAL in phone interviews (audio quality, accent, nerves) and
+    # must NOT be penalised as communication weakness.  We detect them here and
+    # surface a health flag so the LLM evaluator knows to discount them.
+    _CLARIFICATION_PATTERNS = re.compile(
+        r"(?i)("
+        r"sorry\s*[\?\.]"                           # "Sorry?" / "Sorry."
+        r"|sorry[,\.]?\s*(could you|can you|please)?\s*(repeat|say that again|rephrase|clarify)"
+        r"|could you (please\s+)?(repeat|say that again|rephrase|clarify)"
+        r"|can you (please\s+)?(repeat|say that again|rephrase|clarify)"
+        r"|pardon\s*\??"
+        r"|hello\s*\?+"                             # "Hello?" / "Hello?"
+        r"|i (didn'?t|could ?n'?t) (hear|catch|understand)"
+        r"|i don'?t understand"
+        r"|next question\s*\??"
+        r"|what\s*did you say"
+        r")"
+    )
+    clarification_turns = [
+        t for t in user_turns
+        if _CLARIFICATION_PATTERNS.search(t.content)
+    ]
+    clarification_count = len(clarification_turns)
+    # Flag if ≥ 2 clarification requests (common threshold for audio issues)
+    if clarification_count >= 2:
+        transcript_health_flags.append(
+            f"candidate_requested_clarification_{clarification_count}x"
+        )
+    # Also flag if audio gap "Hello?" pattern detected (≥ 2 one-word turns
+    # within a short sequence suggesting the candidate could not hear the AI)
+    single_word_turns = [
+        t for t in user_turns
+        if len(t.content.strip().split()) == 1
+        and t.content.strip().lower() in {"hello", "hello?", "hi", "sorry", "sorry?", "what", "what?"}
+    ]
+    if len(single_word_turns) >= 2:
+        transcript_health_flags.append("possible_audio_gap_detected")
+
     # Fix 4b: surface AI interruption count from latency_metrics
     ai_interruption_count: int = 0
     if call is not None:
@@ -281,15 +319,43 @@ class EvaluationAgent:
     def _build_prompt(self, *, call: Call, job: Job, resume: Resume, evidence: TranscriptEvidence) -> str:
         transcript_health = ", ".join(evidence.transcript_health_flags) if evidence.transcript_health_flags else "none detected"
         ai_interruption_count = int((call.latency_metrics or {}).get("ai_interruption_count", 0))
-        interruption_note = (
-            f"IMPORTANT: The AI system interrupted the candidate {ai_interruption_count} times during this call "
-            "(fired a response before the candidate finished speaking). Many of the candidate's short or "
-            "incomplete answers are a direct consequence of being cut off, not a reflection of their knowledge "
-            "or communication ability. Do NOT penalise communication_score or technical_score for incomplete "
-            "answers that coincide with these interruptions. If ai_interruption_count >= 3, set "
-            "status=call_quality_issue and reduce confidence to 'low'; evaluate only the substantive "
-            "turns where the candidate was allowed to finish.\n"
-        ) if ai_interruption_count >= 3 else ""
+
+        # Derive clarification count and audio gap from health flags
+        clarification_count = next(
+            (int(f.split("_")[-1].rstrip("x")) for f in evidence.transcript_health_flags
+             if f.startswith("candidate_requested_clarification_")), 0
+        )
+        audio_gap = "possible_audio_gap_detected" in evidence.transcript_health_flags
+
+        # Build contextual notes for the evaluator
+        quality_notes: list[str] = []
+
+        if clarification_count >= 2:
+            quality_notes.append(
+                f"NOTE: The candidate asked for clarification or repetition {clarification_count} times "
+                "during this call. In phone interviews this is NORMAL and expected — it reflects audio "
+                "quality, accent, or nervousness, NOT weak communication. Do NOT penalise "
+                "communication_score for turns where the candidate says 'Sorry?', 'Could you repeat?', "
+                "'Hello?', or similar. Exclude those turns entirely from the communication assessment "
+                "and evaluate only turns where the candidate gave a substantive answer."
+            )
+
+        if audio_gap:
+            quality_notes.append(
+                "NOTE: The transcript shows a cluster of very short single-word turns ('Hello?') "
+                "indicating the candidate likely could not hear the AI for a period (audio gap). "
+                "These should be treated as a technical issue, not a measure of the candidate's "
+                "communication ability or engagement."
+            )
+
+        if ai_interruption_count >= 3:
+            quality_notes.append(
+                f"NOTE: The AI system interrupted the candidate {ai_interruption_count} times. "
+                "Short or incomplete answers near these points reflect system behaviour, not ability. "
+                "Set status=call_quality_issue and confidence=low if this significantly affected the call."
+            )
+
+        quality_section = "\n".join(quality_notes)
 
         return (
             "Evaluate this interview transcript for a recruiter.\n"
@@ -300,16 +366,15 @@ class EvaluationAgent:
             "If there is not enough evidence to judge the candidate fairly, set a non-scorable status and recommendation=insufficient_data.\n"
             "Never infer experience, technical depth, or confidence from the job description alone.\n"
             "Only score technical ability if the candidate actually answered technical questions.\n"
-            "If the transcript is fragmented, interrupted, or clearly low quality, lower confidence or use call_quality_issue.\n"
             "For completed_evaluation, scores must be 1-10. For non-scorable outcomes, leave scores null.\n"
-            f"{interruption_note}\n"
+            f"{quality_section}\n\n"
             f"Job title: {job.title}\n"
             f"Job description: {job.description}\n"
             f"Job requirements: {job.requirements or ''}\n"
             f"Candidate name: {resume.candidate_name or ''}\n"
             f"Evidence summary: user_turns={evidence.user_turn_count}, substantive_user_turns={evidence.substantive_user_turn_count}, "
             f"candidate_word_count={evidence.candidate_word_count}, ai_interruption_count={ai_interruption_count}, "
-            f"transcript_health={transcript_health}\n"
+            f"clarification_requests={clarification_count}, transcript_health={transcript_health}\n"
             f"Transcript:\n{(call.transcript or '')[:16000]}"
         )
 
