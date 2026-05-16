@@ -438,6 +438,7 @@ class RealtimeBridge:
         lowered = normalized.lower()
         stripped = lowered.rstrip()
 
+        # Strong signals — always fragment
         if normalized.endswith(","):
             return True
         if normalized.endswith(("...", "…")):
@@ -445,23 +446,46 @@ class RealtimeBridge:
         if len(normalized.split()) <= 2 and not normalized.endswith((".", "?", "!")):
             return True
 
-        trailing_fragments = (
-            "and",
-            "or",
-            "because",
-            "so",
-            "for",
-            "but",
-            "then",
-            "like",
-            "which",
-            "that",
+        # Medium confidence — no terminal punctuation AND last word suggests continuation.
+        # Evidence-based list derived from call ea395892 and common Indian-English
+        # conversational patterns. "the" alone caught "I built one of the" → triggers.
+        _CONTINUATION_WORDS = frozenset({
+            # Conjunctions / connectors (original)
+            "and", "or", "because", "so", "for", "but", "then", "like",
+            "which", "that",
+            # Common sentence-ending fragments from real calls
+            "the", "a", "an", "of", "to", "in", "on", "at", "by", "with",
+            "not", "no", "was", "were", "is", "are", "it",
+            # First-person mid-thought breaks
+            "i", "i'm", "i've", "i'd", "i'll",
+            "you", "we", "they", "he", "she",
+            # Hedging / discourse markers
+            "basically", "essentially", "generally", "actually",
+            "you know", "kind of", "sort of", "type of",
+            "part of", "one of", "some of",
+            "such as", "for example", "for instance",
+            "so i", "so we", "so it", "so that",
+            "and then", "and also", "and we", "and i",
+            "related to",
+            "something like",
+            # Pause fillers
+            "let me think", "one second", "um", "uh", "hmm",
+            # Domain-specific trailing patterns from recruitment calls
             "these are the few things that we generally look for",
             "so on python",
-            "let me think",
-            "one second",
-        )
-        return any(stripped.endswith(fragment) for fragment in trailing_fragments)
+        })
+        if not normalized.rstrip().endswith((".", "?", "!", "...")):
+            last_word = stripped.split()[-1] if stripped.split() else ""
+            if last_word in _CONTINUATION_WORDS:
+                return True
+            # Check last two words for multi-word trailing phrases
+            words = stripped.split()
+            if len(words) >= 2:
+                last_two = f"{words[-2]} {words[-1]}"
+                if last_two in _CONTINUATION_WORDS:
+                    return True
+
+        return False
 
     @classmethod
     def _is_consent_prompt(cls, content: str) -> bool:

@@ -1073,6 +1073,8 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         pending_fragment_task = None
                         await process_user_utterance(cleaned)
 
+                    ai_interruption_count: int = 0  # Fix 4a: track AI interruptions
+
                     try:
                         async for raw in stt_ws:
                             if isinstance(raw, bytes):
@@ -1128,6 +1130,41 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             utterance = " ".join(finalized_segments).strip() or transcript
                             finalized_segments = []
                             self._pending_barge_in = False
+
+                            # Fix 2: Duration-based turn gate.
+                            # Deepgram includes start/duration on each Results event.
+                            # If the candidate spoke for < PIPELINE_MIN_TURN_SECONDS AND
+                            # produced < 4 words AND didn't end with terminal punctuation,
+                            # treat as fragment regardless of the word-list check.
+                            speech_duration = data.get("duration", 0.0)
+                            words = len(utterance.split())
+                            ends_with_punct = utterance.rstrip().endswith((".", "?", "!", "..."))
+                            is_short_burst = (
+                                speech_duration > 0
+                                and speech_duration < settings.PIPELINE_MIN_TURN_SECONDS
+                                and words < 4
+                                and not ends_with_punct
+                            )
+                            if is_short_burst:
+                                logger.debug(
+                                    "Duration gate: %.2fs / %d words — treating as fragment (call=%s)",
+                                    speech_duration, words, call_id,
+                                )
+                                # Fix 4a: count as a potential interruption
+                                ai_interruption_count += 1
+                                pending_fragment_text = " ".join(
+                                    s for s in (pending_fragment_text, utterance) if s
+                                ).strip()
+                                pending_fragment_generation += 1
+                                if pending_fragment_task and not pending_fragment_task.done():
+                                    pending_fragment_task.cancel()
+                                pending_fragment_task = asyncio.create_task(
+                                    flush_pending_fragment(pending_fragment_generation)
+                                )
+                                if stop_event.is_set():
+                                    return
+                                continue
+
                             await queue_or_process_user_utterance(utterance)
                             if stop_event.is_set():
                                 return
@@ -1246,6 +1283,19 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                 ),
                             )
                             await session.commit()
+                    # Fix 4a: persist interruption count for fair evaluation
+                    if call_id and ai_interruption_count > 0:
+                        async with self._session_factory()() as session:
+                            call_record = await session.get(Call, call_id)
+                            if call_record is not None:
+                                metrics = dict(call_record.latency_metrics or {})
+                                metrics["ai_interruption_count"] = ai_interruption_count
+                                call_record.latency_metrics = metrics
+                                await session.commit()
+                        logger.info(
+                            "Persisted ai_interruption_count=%d (call=%s)",
+                            ai_interruption_count, call_id,
+                        )
                     await self._update_call_finished(call_id)
                 try:
                     await websocket.close()

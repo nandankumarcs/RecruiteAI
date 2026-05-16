@@ -149,7 +149,7 @@ def _extract_turns(transcript: str | None) -> list[TranscriptTurn]:
     return turns
 
 
-def _analyze_transcript_evidence(transcript: str | None) -> TranscriptEvidence:
+def _analyze_transcript_evidence(transcript: str | None, *, call: "Call | None" = None) -> TranscriptEvidence:
     turns = _extract_turns(transcript)
     assistant_turns = [turn for turn in turns if turn.role == "assistant"]
     user_turns = [turn for turn in turns if turn.role in {"user", "candidate"}]
@@ -181,6 +181,15 @@ def _analyze_transcript_evidence(transcript: str | None) -> TranscriptEvidence:
     )
     if user_turns and fragment_like_turns >= max(2, len(user_turns) // 2):
         transcript_health_flags.append("high_fragment_ratio")
+
+    # Fix 4b: surface AI interruption count from latency_metrics
+    ai_interruption_count: int = 0
+    if call is not None:
+        ai_interruption_count = int(
+            (call.latency_metrics or {}).get("ai_interruption_count", 0)
+        )
+    if ai_interruption_count >= 3:
+        transcript_health_flags.append(f"ai_interrupted_candidate_{ai_interruption_count}x")
 
     candidate_word_count = sum(_word_count(turn.content) for turn in user_turns)
     return TranscriptEvidence(
@@ -236,7 +245,7 @@ class EvaluationAgent:
             )
 
     def _preflight_result(self, *, call: Call) -> tuple[TranscriptEvidence, EvaluationResult | None]:
-        evidence = _analyze_transcript_evidence(call.transcript)
+        evidence = _analyze_transcript_evidence(call.transcript, call=call)
 
         if evidence.user_turn_count == 0:
             return evidence, _build_insufficient_data_result(
@@ -271,6 +280,17 @@ class EvaluationAgent:
 
     def _build_prompt(self, *, call: Call, job: Job, resume: Resume, evidence: TranscriptEvidence) -> str:
         transcript_health = ", ".join(evidence.transcript_health_flags) if evidence.transcript_health_flags else "none detected"
+        ai_interruption_count = int((call.latency_metrics or {}).get("ai_interruption_count", 0))
+        interruption_note = (
+            f"IMPORTANT: The AI system interrupted the candidate {ai_interruption_count} times during this call "
+            "(fired a response before the candidate finished speaking). Many of the candidate's short or "
+            "incomplete answers are a direct consequence of being cut off, not a reflection of their knowledge "
+            "or communication ability. Do NOT penalise communication_score or technical_score for incomplete "
+            "answers that coincide with these interruptions. If ai_interruption_count >= 3, set "
+            "status=call_quality_issue and reduce confidence to 'low'; evaluate only the substantive "
+            "turns where the candidate was allowed to finish.\n"
+        ) if ai_interruption_count >= 3 else ""
+
         return (
             "Evaluate this interview transcript for a recruiter.\n"
             "Return structured output with status, confidence, overall_score, technical_score, "
@@ -281,13 +301,15 @@ class EvaluationAgent:
             "Never infer experience, technical depth, or confidence from the job description alone.\n"
             "Only score technical ability if the candidate actually answered technical questions.\n"
             "If the transcript is fragmented, interrupted, or clearly low quality, lower confidence or use call_quality_issue.\n"
-            "For completed_evaluation, scores must be 1-10. For non-scorable outcomes, leave scores null.\n\n"
+            "For completed_evaluation, scores must be 1-10. For non-scorable outcomes, leave scores null.\n"
+            f"{interruption_note}\n"
             f"Job title: {job.title}\n"
             f"Job description: {job.description}\n"
             f"Job requirements: {job.requirements or ''}\n"
             f"Candidate name: {resume.candidate_name or ''}\n"
             f"Evidence summary: user_turns={evidence.user_turn_count}, substantive_user_turns={evidence.substantive_user_turn_count}, "
-            f"candidate_word_count={evidence.candidate_word_count}, transcript_health={transcript_health}\n"
+            f"candidate_word_count={evidence.candidate_word_count}, ai_interruption_count={ai_interruption_count}, "
+            f"transcript_health={transcript_health}\n"
             f"Transcript:\n{(call.transcript or '')[:16000]}"
         )
 
