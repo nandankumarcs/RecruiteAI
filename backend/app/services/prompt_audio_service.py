@@ -478,9 +478,9 @@ class PromptAudioService:
             if question_id is not None:
                 query = query.where(AudioPromptAsset.question_id == question_id)
             
-            # Order by version descending to get the latest version
-            query = query.order_by(AudioPromptAsset.version.desc())
-            
+            # Order by version descending to get the latest version, limit to 1
+            query = query.order_by(AudioPromptAsset.version.desc()).limit(1)
+
             # Execute query
             result = await session.execute(query)
             asset = result.scalar_one_or_none()

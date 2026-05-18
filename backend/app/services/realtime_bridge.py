@@ -164,7 +164,10 @@ class RealtimeBridge:
             for index, question in enumerate(questions[:10])
         )
         summary = (resume.parsed_data or {}).get("summary") or "No summary extracted."
-        skills = ", ".join((resume.parsed_data or {}).get("skills", [])[:12]) or "No skills extracted."
+        raw_skills = (resume.parsed_data or {}).get("skills", [])[:12]
+        # Handle both legacy string skills and new object skills ({name, proficiency, category})
+        skill_names = [s if isinstance(s, str) else (s.get("name") or "") for s in raw_skills]
+        skills = ", ".join(name for name in skill_names if name) or "No skills extracted."
 
         phase_rules = []
         if state.termination_requested:
@@ -175,7 +178,16 @@ class RealtimeBridge:
                 "Ask for consent to continue the screening. Do NOT ask interview questions yet."
             )
         else:
-            phase_rules.append("Consent granted. Ask exactly ONE interview question from the list below and wait for a full answer.")
+            phase_rules.append(
+                "Consent granted. Ask exactly ONE interview question from the list below. "
+                "Copy the question text VERBATIM — every word, every sentence, every punctuation mark. "
+                "If a question has multiple sentences (e.g. 'Have you used Git? What do you use it for?'), "
+                "you MUST include ALL of them as a single compound prompt — do NOT drop any sentence. "
+                "Do not add a preamble, greeting, or paraphrase. Then wait for a full answer. "
+                "EXCEPTION: if the candidate explicitly asks you to rephrase, simplify, or clarify the current "
+                "question (not just 'sorry?' or 'pardon?'), you MAY rephrase it once in simpler words while "
+                "keeping the same meaning."
+            )
 
         if state.off_topic_count > 0 and not state.termination_requested:
             phase_rules.append("Candidate is off-topic. Politely redirect to the interview.")
@@ -193,15 +205,15 @@ class RealtimeBridge:
             f"{question_lines or '1. Tell me about your background.'}\n\n"
             "Critical Rules:\n"
             "- No consent = No interview questions.\n"
-            "- If answer is too short (yes/ok), ask for details/restate question.\n"
+            "- **PROGRESSION**: Track which questions in the list have already been asked (see transcript above). After the candidate gives a substantive answer addressing the current question, advance to the NEXT unasked question — do NOT re-ask the same question even if the candidate ends with a tag/counter-question.\n"
+            "- A question is 'answered' if the candidate's reply contains relevant content on the topic, even partial. Tag questions like 'What do you think?' or 'Did you want to know more?' at the end of an answer are NOT requests to re-ask — acknowledge briefly or ignore, then move on.\n"
+            "- If answer is too short (yes/ok) and you haven't already followed up, ask one short follow-up.\n"
             "- If the candidate sounds mid-sentence, incomplete, or paused briefly, wait for continuation instead of interrupting.\n"
-            "- Ask at most one concise follow-up before moving on. Do not stack multiple follow-ups on a partial answer.\n"
-            "- If the candidate says hello or asks if you are there, acknowledge once and repeat only the core question.\n"
-            "- If the candidate asks a clarifying or meta question, answer it briefly and then restate only the core question.\n"
-            "- Treat clarification, confusion, or requests to repeat as continued engagement, not refusal or completion.\n"
+            "- If the candidate explicitly says 'sorry', 'pardon', 'can you repeat', or asks WHAT you said (no answer content), restate the SAME question once.\n"
+            "- Treat clarification, confusion, or requests to repeat as continued engagement, not refusal.\n"
             "- Decline non-interview requests (poems/stories/jokes) once, then hang up if they persist.\n"
             "- Do not end the call unless the candidate clearly refuses, asks to stop, or all interview questions are complete.\n"
-            "- After final question, say goodbye and end.\n"
+            "- After final question is answered, say goodbye and end.\n"
             "- NEVER begin your response with 'User:', 'Candidate:', 'Assistant:', or any role prefix. Speak directly.\n"
             "- NEVER complete or predict the candidate's unfinished sentence. Wait for them to finish.\n"
             "- Your response is ONLY your next spoken words. Do not include dialogue labels or transcript formatting.\n\n"
@@ -399,9 +411,65 @@ class RealtimeBridge:
             "which company",
             "i did not understand",
             "i didn't understand",
+            "could you clarify",
+            "can you clarify",
+            "could you rephrase",
+            "can you rephrase",
+            "rephrase the question",
+            "say that again",
         )
         if any(phrase in text for phrase in clarification_phrases):
             return CandidateTurnAnalysis()
+
+        # ─── NEGATIVE FAST-PATH (Finding 7 Option C) ─────────────────────────────
+        # Ambiguous "soft termination" patterns — recognise them but defer to LLM
+        # because phrasing can swing between genuine refusal and polite hedge.
+        soft_termination_substrings = (
+            "rather not",
+            "can't talk",
+            "cannot talk",
+            "later please",
+            "i'll pass",
+            "need to go",
+            "got to go",
+            "have to go",
+            "gotta go",
+            "wrap up",
+        )
+        if any(s in text for s in soft_termination_substrings):
+            return None  # ambiguous → let LLM decide
+
+        # Post-consent substantive answer: skip the LLM analyzer entirely.
+        # The candidate is mid-interview, none of the trigger patterns above
+        # matched, so the turn is almost certainly a normal on-topic answer.
+        # This cuts ~80% of LLM-analyze calls in typical interviews
+        # (measured: 21/24 turns hit the LLM unnecessarily before this fix).
+        if state.consent_granted:
+            # Strip apostrophes too so contractions like "haven't" → "haven t".
+            # text_for_match has only punctuation .,!?;: replaced with spaces;
+            # we apply the same to apostrophes for consistent matching.
+            normalized_for_match = " ".join(
+                text_for_match.replace("'", " ").replace("’", " ").split()
+            )
+            word_count = len(normalized_for_match.split())
+            factual_short_answers = (
+                "yes i have",
+                "yes i did",
+                "yes i do",
+                "no i have not",
+                "no i haven t",
+                "no i did not",
+                "no i didn t",
+                "no i don t",
+                "not yet",
+                "not really",
+                "i did",
+                "i didn t",
+                "i have",
+                "i have not",
+            )
+            if word_count >= 4 or normalized_for_match in factual_short_answers:
+                return CandidateTurnAnalysis()  # neutral; no LLM call
 
         return None
 

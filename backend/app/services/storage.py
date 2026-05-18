@@ -77,9 +77,11 @@ class LocalStorageProvider(StorageProvider):
         
     async def get_file_content(self, file_path: str) -> bytes:
         """Read file from local disk."""
-        if not os.path.exists(file_path):
+        # Resolve relative paths against base_dir (same as save_file does)
+        full_path = file_path if os.path.isabs(file_path) else os.path.join(self.base_dir, file_path)
+        if not os.path.exists(full_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-        with open(file_path, "rb") as f:
+        with open(full_path, "rb") as f:
             return f.read()
 
 

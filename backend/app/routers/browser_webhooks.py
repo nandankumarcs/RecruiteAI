@@ -16,7 +16,7 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, status
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +37,7 @@ router = APIRouter()
 @router.get("/api/sim/token/{call_id}")
 async def get_simulator_token(
     call_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
@@ -61,10 +62,10 @@ async def get_simulator_token(
         )
 
     token = mint_simulator_token(call_id=call.id, resume_id=call.resume_id)
-    public = settings.PUBLIC_URL.rstrip("/")
-    ws_base = (
-        public.replace("https://", "wss://").replace("http://", "ws://")
-    )
+    # Build ws_url from the actual request host so the simulator connects
+    # to the right backend regardless of PUBLIC_URL (ngrok vs localhost).
+    base = str(request.base_url).rstrip("/")
+    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
     return {
         "token": token,
         "ws_url": f"{ws_base}/ws/browser-media/{call.resume_id}?token={token}",

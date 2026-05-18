@@ -246,13 +246,13 @@ export function ResumeDetailModal({
               <div className="space-y-5">
                 <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/80">Core Expertise</h4>
                 <div className="flex flex-wrap gap-2">
-                  {skills.map((skill: string, i: number) => (
+                  {skills.map((skill: string | { name: string; proficiency?: string; category?: string }, i: number) => (
                     <Badge
                       key={i}
                       variant="secondary"
                       className="px-3 py-1 text-[10px] font-black uppercase tracking-tighter bg-primary/5 text-primary border border-primary/10 hover:bg-primary/10 transition-colors cursor-default"
                     >
-                      {skill}
+                      {typeof skill === "string" ? skill : skill.name}
                     </Badge>
                   ))}
                 </div>

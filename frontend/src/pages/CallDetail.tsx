@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -15,6 +15,7 @@ import {
   PieChart as PieChartIcon,
   BarChart as BarChartIcon,
   Activity,
+  Play,
 } from "lucide-react";
 
 import {
@@ -41,6 +42,8 @@ import { CallProgressIndicator } from "@/components/calls/CallProgressIndicator"
 import type { CallRecord } from "@/lib/calls";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/context/ToastContext";
+import { AudioPlayer } from "@/components/audio/AudioPlayer";
+import { type TranscriptEntry } from "@/components/audio/useAudioPlayer";
 
 interface CallEvaluation extends Record<string, unknown> {
   schema_version: string;
@@ -191,6 +194,8 @@ export function CallDetail() {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const [recordingLoading, setRecordingLoading] = useState(false);
+  const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
+  const seekToTranscriptRef = useRef<((entry: TranscriptEntry) => void) | null>(null);
 
 
   useEffect(() => {
@@ -371,6 +376,29 @@ export function CallDetail() {
     }
     return parseTranscript(call?.transcript ?? null);
   }, [call?.transcript, call?.messages]);
+
+  const transcriptBottomRef = useRef<HTMLDivElement>(null);
+  const isLive = ["queued", "ringing", "in_progress"].includes(call?.status ?? "");
+
+  // Auto-scroll transcript to bottom whenever new messages arrive during a live call
+  useEffect(() => {
+    if (isLive && transcriptBottomRef.current) {
+      transcriptBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [transcriptLines, isLive]);
+
+  // Auto-scroll the active playing segment into view
+  useEffect(() => {
+    if (activeSegmentId) {
+      const element = document.getElementById(`transcript-line-${activeSegmentId}`);
+      if (element) {
+        element.scrollIntoView({
+          behavior: "smooth",
+          block: "nearest",
+        });
+      }
+    }
+  }, [activeSegmentId]);
 
   if (loading) {
     return (
@@ -555,10 +583,30 @@ export function CallDetail() {
 
       <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-6">
+          {/* Call Recording — feature-rich WaveSurfer player */}
+          <AudioPlayer
+            audioUrl={recordingUrl}
+            audioLoading={recordingLoading}
+            callStartedAt={call.started_at?.toString()}
+            durationSeconds={call.duration_seconds}
+            transcript={transcriptLines as TranscriptEntry[]}
+            onActiveSegmentChange={setActiveSegmentId}
+            onSeekToTranscriptEntry={(seekFn) => {
+              seekToTranscriptRef.current = seekFn;
+            }}
+          />
+
+          {/* Transcript — below recording */}
           <Card className="border-border/50 bg-card/70">
             <CardHeader className="flex flex-row items-center justify-between gap-4">
-              <div>
+              <div className="flex items-center gap-2">
                 <CardTitle>Transcript</CardTitle>
+                {isLive && (
+                  <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-600">
+                    <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
+                    Live
+                  </span>
+                )}
               </div>
               <Button onClick={evaluateCall} disabled={isEvaluating || !call.transcript}>
                 {isEvaluating ? (
@@ -584,29 +632,57 @@ export function CallDetail() {
                   <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar py-2">
                     {transcriptLines.map((line) => {
                       const isAssistant = /^ai|assistant$/i.test(line.speaker);
+                      const isActive = activeSegmentId === line.id;
+                      
                       return (
                         <div
                           key={line.id}
-                          className={`rounded-xl border p-4 text-sm leading-7 ${
-                            isAssistant
-                              ? "border-primary/20 bg-primary/5"
-                              : "border-border/50 bg-background/60"
+                          id={`transcript-line-${line.id}`}
+                          onClick={() => {
+                            if (seekToTranscriptRef.current) {
+                              seekToTranscriptRef.current(line as TranscriptEntry);
+                            }
+                          }}
+                          className={`group/line relative rounded-xl border p-4 text-sm leading-7 transition-all cursor-pointer hover:shadow-md ${
+                            isActive
+                              ? "border-primary bg-primary/10 shadow-sm ring-1 ring-primary/20 scale-[1.01] z-20"
+                              : isAssistant
+                              ? "border-primary/20 bg-primary/5 hover:bg-primary/8"
+                              : "border-border/50 bg-background/60 hover:bg-background/80"
                           }`}
                         >
                           <div className="mb-1 flex items-center justify-between">
-                            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                              {line.speaker}
-                            </span>
-                            {line.timestamp && (
-                              <span className="text-[10px] font-medium text-muted-foreground/60 tabular-nums">
-                                {new Date(line.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs font-bold uppercase tracking-wide ${
+                                isActive ? "text-primary" : "text-muted-foreground"
+                              }`}>
+                                {line.speaker}
                               </span>
-                            )}
+                              {isActive && (
+                                <span className="flex h-1.5 w-1.5">
+                                  <span className="animate-ping absolute inline-flex h-1.5 w-1.5 rounded-full bg-primary opacity-75"></span>
+                                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3">
+                              {line.timestamp && (
+                                <span className="text-[10px] font-medium text-muted-foreground/60 tabular-nums">
+                                  {new Date(line.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                </span>
+                              )}
+                              <Play className={`h-3 w-3 transition-opacity ${
+                                isActive ? "text-primary opacity-100" : "text-muted-foreground opacity-0 group-hover/line:opacity-100"
+                              }`} />
+                            </div>
                           </div>
-                          <div className="text-foreground">{line.text}</div>
+                          <div className={`transition-colors ${isActive ? "text-foreground font-medium" : "text-foreground/90"}`}>
+                            {line.text}
+                          </div>
                         </div>
                       );
                     })}
+                    <div ref={transcriptBottomRef} />
                   </div>
 
                   <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-card to-transparent z-10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -614,36 +690,6 @@ export function CallDetail() {
               ) : (
                 <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-6 text-sm text-muted-foreground">
                   Transcript is not available yet for this call.
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="border-border/50 bg-card/70">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Headphones className="h-4 w-4 text-primary" />
-                Call Recording
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {recordingLoading ? (
-                <div className="space-y-3">
-                  <Skeleton className="h-10 w-full rounded-lg" />
-                  <Skeleton className="h-4 w-40" />
-                </div>
-              ) : recordingUrl ? (
-                <div className="space-y-3">
-                  <audio controls className="w-full">
-                    <source src={recordingUrl} />
-                  </audio>
-                  <p className="text-xs text-muted-foreground">
-                    Playback is loaded through the authenticated backend proxy.
-                  </p>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-border/50 bg-background/40 p-6 text-sm text-muted-foreground">
-                  No recording is available for this call yet.
                 </div>
               )}
             </CardContent>

@@ -9,15 +9,18 @@ Endpoints:
   DELETE /api/jobs/{id}  — Delete a specific job
 """
 
+import struct
 import uuid
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
 from app.core.exceptions import NotFoundError, ValidationError
 from app.database import get_db
+from app.models.audio_prompt_asset import AudioPromptAsset
 from app.models.job import Job
 from app.models.question import InterviewQuestion
 from app.models.user import User
@@ -25,6 +28,28 @@ from app.schemas.job import JobCreate, JobResponse, JobUpdate
 from app.schemas.question import InterviewQuestionCreate, InterviewQuestionResponse, InterviewQuestionUpdate, GeneratedQuestionSetResponse, QuestionsReorderRequest
 from app.tasks.audio_generation import schedule_generate_question_audio_for_job
 from app.agents.question_generator_agent import QuestionGeneratorAgent, get_question_generator_agent
+
+
+def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 8000, channels: int = 1, bits_per_sample: int = 16) -> bytes:
+    """Wrap raw L16 PCM bytes in a RIFF/WAV container so browsers can play them."""
+    data_size = len(pcm_bytes)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,                                                    # PCM
+        channels,
+        sample_rate,
+        sample_rate * channels * bits_per_sample // 8,       # byte rate
+        channels * bits_per_sample // 8,                     # block align
+        bits_per_sample,
+        b"data",
+        data_size,
+    )
+    return header + pcm_bytes
 
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -319,3 +344,122 @@ async def reorder_job_questions(
             question.order_index = update.order_index
 
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Question audio endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/{job_id}/questions/audio-status")
+async def get_questions_audio_status(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return TTS audio status keyed by question_id: ready | pending | failed | missing."""
+    result = await db.execute(
+        select(Job).where(Job.id == job_id, Job.user_id == current_user.id)
+    )
+    if not result.scalar_one_or_none():
+        raise NotFoundError(resource="Job")
+
+    q_result = await db.execute(
+        select(InterviewQuestion).where(InterviewQuestion.job_id == job_id)
+    )
+    questions = q_result.scalars().all()
+
+    statuses: dict[str, str] = {}
+    for question in questions:
+        template_key = f"question_{question.id}"
+        asset_result = await db.execute(
+            select(AudioPromptAsset)
+            .where(AudioPromptAsset.template_key == template_key)
+            .order_by(AudioPromptAsset.version.desc())
+            .limit(1)
+        )
+        asset = asset_result.scalar_one_or_none()
+        statuses[str(question.id)] = asset.status if asset else "missing"
+
+    return statuses
+
+
+@router.post("/{job_id}/questions/{question_id}/audio/regenerate", status_code=202)
+async def regenerate_question_audio(
+    job_id: uuid.UUID,
+    question_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Kick off TTS regeneration for a single question."""
+    result = await db.execute(
+        select(Job).where(Job.id == job_id, Job.user_id == current_user.id)
+    )
+    if not result.scalar_one_or_none():
+        raise NotFoundError(resource="Job")
+
+    q_result = await db.execute(
+        select(InterviewQuestion).where(
+            InterviewQuestion.id == question_id,
+            InterviewQuestion.job_id == job_id,
+        )
+    )
+    question = q_result.scalar_one_or_none()
+    if not question:
+        raise NotFoundError(resource="Question")
+
+    import asyncio
+    from app.services.prompt_audio_service import get_prompt_audio_service
+
+    async def _regen() -> None:
+        svc = get_prompt_audio_service()
+        await svc.ensure_prompt_audio(
+            template_key=f"question_{question.id}",
+            category="question",
+            text=question.question_text,
+            job_id=job_id,
+            question_id=question.id,
+            force_regenerate=True,
+        )
+
+    asyncio.create_task(_regen())
+    return {"status": "queued", "question_id": str(question_id)}
+
+
+@router.get("/{job_id}/questions/{question_id}/audio/file")
+async def get_question_audio_file(
+    job_id: uuid.UUID,
+    question_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stream the pre-generated TTS audio for a question as a WAV file."""
+    result = await db.execute(
+        select(Job).where(Job.id == job_id, Job.user_id == current_user.id)
+    )
+    if not result.scalar_one_or_none():
+        raise NotFoundError(resource="Job")
+
+    template_key = f"question_{question_id}"
+    asset_result = await db.execute(
+        select(AudioPromptAsset)
+        .where(
+            AudioPromptAsset.template_key == template_key,
+            AudioPromptAsset.status == "ready",
+        )
+        .order_by(AudioPromptAsset.version.desc())
+        .limit(1)
+    )
+    asset = asset_result.scalar_one_or_none()
+    if not asset:
+        raise NotFoundError(resource="AudioAsset")
+
+    from app.services.storage import get_storage_provider
+    storage = get_storage_provider()
+    pcm_bytes = await storage.get_file_content(asset.file_path)
+    wav_bytes = _pcm_to_wav(pcm_bytes, sample_rate=asset.sample_rate or 8000)
+
+    return Response(
+        content=wav_bytes,
+        media_type="audio/wav",
+        headers={"Content-Disposition": f'inline; filename="question_{question_id}.wav"'},
+    )

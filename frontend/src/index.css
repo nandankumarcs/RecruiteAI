@@ -126,6 +126,30 @@
   .custom-scrollbar::-webkit-scrollbar-thumb {
     @apply bg-primary/10 rounded-full hover:bg-primary/30 transition-all;
   }
+
+  /* Premium Audio Player Styles */
+  .volume-slider {
+    transition: opacity 0.2s ease;
+  }
+  .volume-slider::-webkit-slider-runnable-track {
+    @apply h-1 w-full rounded-full bg-border/60;
+  }
+  .volume-slider::-webkit-slider-thumb {
+    @apply -mt-[6px] h-4 w-4 appearance-none rounded-full border-2 border-primary bg-background shadow-md shadow-primary/20 transition-all active:scale-110;
+  }
+  .volume-slider::-moz-range-track {
+    @apply h-1 w-full rounded-full bg-border/60;
+  }
+  .volume-slider::-moz-range-thumb {
+    @apply h-4 w-4 appearance-none rounded-full border-2 border-primary bg-background shadow-md shadow-primary/20 transition-all active:scale-110;
+  }
+
+  /* WaveSurfer Region Styling */
+  .wavesurfer-region {
+    @apply transition-opacity hover:opacity-100;
+    border-radius: 4px;
+    z-index: 1;
+  }
 }
 
 @keyframes bounce-subtle {

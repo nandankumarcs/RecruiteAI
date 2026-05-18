@@ -49,6 +49,14 @@ from app.services.realtime_bridge import ConversationState, RealtimeBridge
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+# Ensure 🎤 instrumentation logs surface — uvicorn defaults custom loggers to WARNING
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setLevel(logging.INFO)
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(_h)
+    logger.propagate = False
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +392,10 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         asset_lookup_ms = int((perf_counter() - lookup_started) * 1000)
         main_prompt_ready = selection.source_type == "prebuilt_asset" and selection.asset is not None
         estimated_latency_ms = 0 if main_prompt_ready else 800
+        logger.info(
+            "🎤 [%s] AUDIO_SOURCE: %s key=%s lookup_ms=%d text=%r",
+            call_id, selection.source_type, selection.template_key, asset_lookup_ms, text[:80],
+        )
 
         should_play_filler, filler_key = await self._filler_queue.should_play_filler(
             estimated_latency_ms=estimated_latency_ms,
@@ -441,6 +453,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
 
         if selection.source_type == "prebuilt_asset" and selection.asset is not None:
             try:
+                _t_cache = perf_counter()
                 await self._play_cached_audio(
                     websocket=websocket,
                     provider=provider,
@@ -448,8 +461,16 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                     asset=selection.asset,
                     call_id=call_id,
                 )
+                logger.info(
+                    "🎤 [%s] PLAYED_CACHED in %.0fms key=%s",
+                    call_id, (perf_counter() - _t_cache) * 1000, selection.template_key,
+                )
                 return
             except Exception as exc:
+                logger.exception(
+                    "🎤 [%s] CACHE_PLAY_FAILED key=%s → falling back to live TTS: %s",
+                    call_id, selection.template_key, exc,
+                )
                 log_audio_source_event(
                     call_id=str(call_id),
                     audio_source="live_tts_fallback",
@@ -462,12 +483,18 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                     error=str(exc),
                 )
 
+        _t_live = perf_counter()
+        logger.info("🎤 [%s] LIVE_TTS_START text=%r", call_id, (selection.fallback_text or text)[:80])
         await self._speak_text(
             websocket=websocket,
             provider=provider,
             stream_id=stream_id,
             text=selection.fallback_text or text,
             call_id=call_id,
+        )
+        logger.info(
+            "🎤 [%s] LIVE_TTS_DONE in %.0fms",
+            call_id, (perf_counter() - _t_live) * 1000,
         )
 
     async def _play_terminal_message_and_end_call(
@@ -533,7 +560,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         completion = await self.openai_client.chat.completions.create(
             model=self.text_model,
             temperature=0.2,
-            max_tokens=48,
+            max_tokens=120,  # was 48 — too low; questions like Q6 got truncated mid-sentence
             messages=[
                 {"role": "system", "content": instructions},
                 {
@@ -879,6 +906,20 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
             )
         )
 
+        def _log_tts_exception(task: asyncio.Task) -> None:
+            """Surface exceptions from the fire-and-forget TTS task."""
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.error(
+                    "🎤 [%s] TTS_TASK_CRASHED: %s: %s",
+                    call_id, type(exc).__name__, exc,
+                    exc_info=exc,
+                )
+
+        self._current_tts_task.add_done_callback(_log_tts_exception)
+
     async def handle(self, websocket: WebSocket, resume_id: uuid.UUID, provider: str = "twilio") -> None:
         import sys
         sys.stderr.write(f"START handle: resume_id={resume_id} provider={provider}\n")
@@ -941,11 +982,17 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
 
         log_debug("Connecting to Deepgram STT...")
         try:
-            async with websockets.connect(stt_url, additional_headers=stt_headers) as stt_ws:
+            async with websockets.connect(
+                stt_url,
+                additional_headers=stt_headers,
+                ping_interval=None,   # Deepgram uses app-layer keepalive; WS-protocol pings cause 1011 drops
+            ) as stt_ws:
                 log_debug("Deepgram STT connected")
 
+                ai_interruption_count: int = 0  # Fix 4a: track AI interruptions (handle scope)
+
                 async def receive_stt_events() -> None:
-                    nonlocal finalized_segments
+                    nonlocal finalized_segments, ai_interruption_count
                     pending_fragment_text = ""
                     pending_fragment_task: asyncio.Task | None = None
                     pending_fragment_generation = 0
@@ -954,8 +1001,10 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         nonlocal finalized_segments
                         if not call_id:
                             return
+                        from time import perf_counter
+                        _t_start = perf_counter()
 
-                        logger.info("User turn completed (Deepgram, call=%s): %s", call_id, utterance)
+                        logger.info("🎤 [%s] USER_TURN: %r", call_id, utterance)
                         await self._append_message(
                             call_id,
                             "user",
@@ -964,9 +1013,14 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         )
                         await self._mark_first_user_transcript(call_id)
 
+                        _t_analyze = perf_counter()
                         analysis = await self._analyze_candidate_turn(
                             transcript=utterance,
                             state=state,
+                        )
+                        logger.info(
+                            "🎤 [%s] ANALYZE: %.0fms result=%s",
+                            call_id, (perf_counter() - _t_analyze) * 1000, analysis,
                         )
 
                         state_changed = False
@@ -978,6 +1032,11 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             state_changed = True
                         if analysis.off_topic_request:
                             state.off_topic_count += 1
+                            state_changed = True
+                        elif state.consent_granted and state.off_topic_count > 0:
+                            # Reset counter on a normal/on-topic turn so isolated
+                            # misclassifications don't accumulate and end the call.
+                            state.off_topic_count = 0
                             state_changed = True
 
                         if state.termination_requested:
@@ -1002,7 +1061,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             )
                             stop_event.set()
                             return
-                        if state.off_topic_count >= 2:
+                        if state.off_topic_count >= 3:  # was 2 — too aggressive; self-corrections shouldn't terminate the call
                             response_text = (
                                 "It sounds like now is not the right time for this screening. "
                                 "Thank you for your time. Goodbye."
@@ -1028,14 +1087,27 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             stop_event.set()
                             return
 
-                        response_text = await self._generate_next_turn(
-                            call_id=call_id,
-                            resume=resume,
-                            job=job,
-                            questions=questions,
-                            state=state,
+                        _t_gen = perf_counter()
+                        try:
+                            response_text = await self._generate_next_turn(
+                                call_id=call_id,
+                                resume=resume,
+                                job=job,
+                                questions=questions,
+                                state=state,
+                            )
+                        except Exception as gen_exc:
+                            logger.exception(
+                                "🎤 [%s] GENERATE FAILED after %.0fms: %s",
+                                call_id, (perf_counter() - _t_gen) * 1000, gen_exc,
+                            )
+                            return
+                        logger.info(
+                            "🎤 [%s] GENERATE: %.0fms response=%r",
+                            call_id, (perf_counter() - _t_gen) * 1000, (response_text or "")[:100],
                         )
                         if not response_text:
+                            logger.warning("🎤 [%s] GENERATE returned empty response — skipping turn", call_id)
                             return
 
                         # Fix 3 & 4: strip LLM role-prefix hallucinations + add
@@ -1046,6 +1118,35 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         )
                         if not response_text:
                             return
+
+                        # ─── Cache-text reconciliation (fixes "AI repeats Q3 second sentence") ───
+                        # When the LLM drops a sentence from a multi-part question (e.g. asks only
+                        # "Have you used Git before?" out of "Have you used Git? What do you use it
+                        # for?"), the cache prefix-matches and plays the FULL audio — but if we
+                        # store the LLM's truncated text in the DB, the LLM thinks only half the
+                        # question was asked and generates the missing half as a redundant follow-up.
+                        # Substitute the response_text with the matched question's full text so
+                        # what's stored matches what the candidate actually heard.
+                        try:
+                            _pre_check = await self.runtime_selection.select_audio_source(
+                                assistant_text=response_text,
+                                conversation_state=state,
+                                job_id=job.id if job else None,
+                                questions=questions,
+                            )
+                            if (
+                                _pre_check.source_type == "prebuilt_asset"
+                                and _pre_check.asset is not None
+                                and _pre_check.asset.text
+                                and _pre_check.asset.text.strip() != response_text.strip()
+                            ):
+                                logger.info(
+                                    "🎤 [%s] CACHE_RECONCILE: %r → %r",
+                                    call_id, response_text[:60], _pre_check.asset.text[:60],
+                                )
+                                response_text = _pre_check.asset.text
+                        except Exception as exc:
+                            logger.warning("🎤 [%s] CACHE_RECONCILE failed: %s", call_id, exc)
 
                         if not state.consent_granted and self._is_consent_prompt(response_text):
                             state.consent_prompt_delivered = True
@@ -1123,8 +1224,6 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             pending_fragment_text = ""
                         pending_fragment_task = None
                         await process_user_utterance(cleaned)
-
-                    ai_interruption_count: int = 0  # Fix 4a: track AI interruptions
 
                     try:
                         async for raw in stt_ws:

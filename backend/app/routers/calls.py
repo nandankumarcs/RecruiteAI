@@ -211,10 +211,10 @@ async def start_call(
     await _check_job_questions(db=db, job_id=job.id)
 
 
-    # `browser` provider also needs PUBLIC_URL to be reachable so the WebSocket
-    # URL it advertises actually works. `mock` is exempt because it never opens a stream.
+    # `browser` connects its own WebSocket directly — no public webhook needed.
+    # `mock` is exempt because it never opens a stream.
     if (
-        getattr(telephony, "provider_name", "") in ("twilio", "exotel", "browser")
+        getattr(telephony, "provider_name", "") in ("twilio", "exotel")
         and not getattr(telephony, "enable_mock_progression", False)
     ):
         await _verify_public_webhook_endpoint()

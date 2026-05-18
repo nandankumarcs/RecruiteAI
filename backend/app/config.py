@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     SARVAM_TTS_FIRST_BYTE_TIMEOUT_SECONDS: float = 2.0
     SARVAM_TTS_COMPLETION_TIMEOUT_SECONDS: float = 15.0
     SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS: float = 30.0
+    PIPELINE_FILLERS_ENABLED: bool = False   # set True to re-enable filler phrases
     PIPELINE_TTS_JITTER_BUFFER_MS: int = 200
     PIPELINE_STT_ENDPOINTING_MS: int = 1500   # 500→1500: covers natural thinking pauses
     PIPELINE_STT_UTTERANCE_END_MS: int = 2500  # 1000→2500: gives candidate time to finish

@@ -12,6 +12,8 @@ responsiveness without creating verbal spam.
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.config import get_settings
+
 
 class FillerQueueManager:
     """
@@ -79,6 +81,10 @@ class FillerQueueManager:
         
         **Validates: Requirements 6.2, 6.4**
         """
+        # Rule 0: Global disable via config
+        if not get_settings().PIPELINE_FILLERS_ENABLED:
+            return (False, None)
+
         # Rule 1: Skip if main prompt ready
         if main_prompt_ready:
             return (False, None)

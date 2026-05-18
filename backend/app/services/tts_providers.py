@@ -439,6 +439,7 @@ class SarvamTTSProvider:
             raise
 
 
+
 def get_tts_provider() -> BaseTTSProvider:
     """Factory function to get the configured TTS provider."""
     provider_name = settings.TTS_PROVIDER.lower()
@@ -448,5 +449,5 @@ def get_tts_provider() -> BaseTTSProvider:
     elif provider_name == "deepgram":
         return DeepgramTTSProvider()
     else:
-        logger.warning(f"Unknown TTS provider '{provider_name}', falling back to Deepgram")
-        return DeepgramTTSProvider()
+        logger.warning(f"Unknown TTS provider '{provider_name}', falling back to Sarvam")
+        return SarvamTTSProvider()

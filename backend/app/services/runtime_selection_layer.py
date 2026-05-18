@@ -199,10 +199,25 @@ class RuntimeSelectionLayer:
             normalized_question_tokens = self._normalize_question_tokens(question.question_text)
             if normalized_assistant_tokens and normalized_assistant_tokens == normalized_question_tokens:
                 return question
+            # Prefix match — LLM may drop the second sentence of a multi-sentence question
+            # (e.g. "Have you used Git? What do you use it for?" → only "Have you used Git?").
+            # Require >= 4 words to avoid trivial false positives (e.g. "Sure thing" would
+            # otherwise match any cached question starting with those words).
+            if (
+                len(normalized_assistant.split()) >= 4
+                and normalized_question.startswith(normalized_assistant)
+            ):
+                return question
             assistant_words = set(normalized_assistant_tokens.split())
             question_words = set(normalized_question_tokens.split())
             if not assistant_words or not question_words:
                 continue
+            # Use the question (stored) side as denominator. A follow-up like
+            # "Can you share what you usually use Git for..." shares many words
+            # with "Have you used Git before? What do you use it for?" but is
+            # NOT the same question — using max() prevents this false positive.
+            # The literal-prefix check above already handles the legitimate
+            # "LLM dropped 2nd sentence" case.
             overlap = len(assistant_words & question_words) / max(len(question_words), 1)
             if overlap >= 0.8:
                 return question
