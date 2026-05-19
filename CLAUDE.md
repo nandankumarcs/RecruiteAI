@@ -112,6 +112,23 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 4. Use `get_impact_radius` before any refactor or deletion.
 5. Use `query_graph` pattern="tests_for" to check test coverage before shipping.
 
+## Engineering discipline — how to approach problems
+
+**Fix root causes, never symptoms.**
+Before writing any fix, ask: *is this addressing why the problem exists, or just hiding it?* A heuristic added on top of a broken design is a symptom fix. Heuristics accumulate, conflict, and create new bugs. When you find yourself adding a third band-aid to the same area, stop — the design is wrong.
+
+**Understand before acting.**
+Read the relevant code fully. Trace the actual execution path. Check what previous fixes exist and why they were made. Rushing to implement before understanding is how fixes void each other. If a fix seems simple but the area is complex, spend more time reading — never less.
+
+**New fixes must not void existing ones.**
+Before implementing, explicitly check: does this interact with any recent change? Which invariants does the existing code depend on? A fix that breaks a previous fix is worse than no fix. List the relevant recent changes mentally and verify compatibility.
+
+**Architectural changes over accumulated patches.**
+When multiple band-aids point at the same area, step back and redesign that area cleanly. The cost of one proper redesign is always lower than the accumulated cost of maintaining a pile of heuristics. When in doubt, propose a clean design first, then implement.
+
+**Automated tests before manual testing.**
+For any behavioral change, write tests that encode the invariants first. Tests are how we know a fix works AND doesn't break anything. If you can't express the expected behavior as a test, you don't understand it well enough to implement.
+
 ## Conventions worth knowing
 
 - All settings flow through `app/config.py:Settings`; add new env vars there and access via `get_settings()`.

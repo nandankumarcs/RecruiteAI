@@ -549,8 +549,13 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
         job,
         questions,
         state: ConversationState,
+        extra_user_utterance: str | None = None,
     ) -> str:
         transcript = await self._load_call_transcript(call_id)
+        # Speculative mode: the caller may pass the latest utterance before it's
+        # committed to DB so the LLM sees an accurate transcript.
+        if extra_user_utterance:
+            transcript = f"{transcript}\nCandidate: {extra_user_utterance}".strip()
         instructions = self._build_instructions(
             resume=resume,
             job=job,
@@ -997,12 +1002,142 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                     pending_fragment_task: asyncio.Task | None = None
                     pending_fragment_generation = 0
 
+                    # ── Repeat-response tracker (code-level Q loop breaker) ──
+                    # Counts consecutive identical AI responses. If the LLM
+                    # produces the same text 3 times in a row, the prompt-based
+                    # "max 3 times" rule has failed — we force-advance by
+                    # regenerating with an explicit override instruction.
+                    _last_ai_response: str = ""
+                    _consecutive_repeat_count: int = 0
+
+                    # ── Code-driven question sequencing ─────────────────────
+                    # The LLM NEVER decides which question to ask next.
+                    # Code tracks position in the question list and advances
+                    # after ANY substantive response (regardless of quality/language).
+                    # This ensures ESL candidates and verbose candidates both get
+                    # fair, predictable progression.
+                    _current_q_idx: int = -1   # -1 = pre-consent / opener phase
+                    _has_followed_up: bool = False  # asked one follow-up on current Q?
+                    # Sequence counter: each process_user_utterance gets a number.
+                    # Only the LATEST turn can play TTS — prevents stale follow-up
+                    # LLM results from overriding a code-driven advance that already played.
+                    _turn_seq: int = 0
+                    _last_played_seq: int = -1
+                    # Fixed follow-up prompts (no LLM needed — avoids LLM generating wrong Q)
+                    _FOLLOWUP_PHRASES = [
+                        "Could you tell me a bit more about that?",
+                        "Can you elaborate on that?",
+                        "Could you share a little more?",
+                    ]
+                    _followup_phrase_idx: int = 0
+
+                    # ── Speculative LLM execution ────────────────────────────
+                    # At 500ms endpointing, speech_final fires early. We start
+                    # the LLM speculatively and commit only after the extra
+                    # PIPELINE_SPECULATIVE_CONFIRMATION_MS window passes without
+                    # new speech.
+                    #
+                    # Cancellation fires on is_final=True transcripts (real new
+                    # speech), NOT on SpeechStarted. SpeechStarted fires on
+                    # ambient noise every few seconds at 500ms endpointing — using
+                    # it to cancel blocks answers from ever committing.
+                    _spec_task: asyncio.Task | None = None
+                    _confirm_task: asyncio.Task | None = None
+                    _spec_result: dict | None = None   # {utterance, analysis, response_text}
+                    # True after a speech_final starts a spec cycle; triggers
+                    # cancellation when the next real is_final transcript arrives.
+                    _awaiting_new_speech: bool = False
+
+                    async def _speculative_compute(utterance_copy: str) -> None:
+                        nonlocal _spec_result
+                        try:
+                            logger.info("🎤 [%s] SPEC_START: %r", call_id, utterance_copy[:60])
+                            t0 = perf_counter()
+                            # Analysis (mostly 0ms via fast-path)
+                            analysis = await self._analyze_candidate_turn(
+                                transcript=utterance_copy, state=state
+                            )
+                            # Build a speculative copy of state with analysis applied
+                            import copy as _copy
+                            spec_state = _copy.copy(state)
+                            if analysis.grant_consent and not spec_state.consent_granted:
+                                spec_state.consent_granted = True
+                            if analysis.request_termination:
+                                spec_state.termination_requested = True
+                            if analysis.off_topic_request:
+                                spec_state.off_topic_count += 1
+                            elif spec_state.consent_granted and spec_state.off_topic_count > 0:
+                                spec_state.off_topic_count = 0
+
+                            # Terminal path — no generation needed
+                            if spec_state.termination_requested or spec_state.off_topic_count >= 3:
+                                _spec_result = {
+                                    "utterance": utterance_copy,
+                                    "analysis": analysis,
+                                    "response_text": None,
+                                }
+                                return
+
+                            # Code-driven sequencing: compute next response without LLM
+                            # for all normal post-consent turns (same logic as process_user_utterance).
+                            # Only call LLM for pre-consent or very short answers.
+                            spec_words = len(utterance_copy.split())
+                            if not spec_state.consent_granted:
+                                response_text = await self._generate_next_turn(
+                                    call_id=call_id, resume=resume, job=job,
+                                    questions=questions, state=spec_state,
+                                    extra_user_utterance=utterance_copy,
+                                )
+                            elif analysis.is_clarification:
+                                response_text = (
+                                    questions[_current_q_idx].question_text
+                                    if 0 <= _current_q_idx < len(questions) else None
+                                )
+                            elif (spec_words < 5 and not _has_followed_up and _current_q_idx >= 0
+                                  and _current_q_idx + 1 < len(questions)):
+                                # Fixed follow-up phrase — same as main path, no LLM
+                                response_text = _FOLLOWUP_PHRASES[_followup_phrase_idx % len(_FOLLOWUP_PHRASES)]
+                            else:
+                                # Advance to next question — no LLM needed
+                                next_idx = _current_q_idx + 1
+                                if next_idx >= len(questions):
+                                    response_text = (
+                                        f"Thank you for your answers, "
+                                        f"{resume.candidate_name or 'Sarthak'}. "
+                                        f"It was great speaking with you!"
+                                    )
+                                else:
+                                    response_text = questions[next_idx].question_text
+                            _spec_result = {
+                                "utterance": utterance_copy,
+                                "analysis": analysis,
+                                "response_text": response_text,
+                            }
+                            logger.info(
+                                "🎤 [%s] SPEC_READY: %.0fms response=%r",
+                                call_id, (perf_counter() - t0) * 1000,
+                                (response_text or "")[:80],
+                            )
+                        except asyncio.CancelledError:
+                            _spec_result = None
+                            raise
+                        except Exception as exc:
+                            logger.warning("🎤 [%s] SPEC_FAILED: %s", call_id, exc)
+                            _spec_result = None
+
                     async def process_user_utterance(utterance: str) -> None:
-                        nonlocal finalized_segments
+                        nonlocal finalized_segments, _spec_result, _spec_task
+                        nonlocal _last_ai_response, _consecutive_repeat_count
+                        nonlocal _current_q_idx, _has_followed_up
+                        nonlocal _turn_seq, _last_played_seq, _followup_phrase_idx
                         if not call_id:
                             return
                         from time import perf_counter
                         _t_start = perf_counter()
+
+                        # Claim a sequence number for this turn
+                        my_seq = _turn_seq
+                        _turn_seq += 1
 
                         logger.info("🎤 [%s] USER_TURN: %r", call_id, utterance)
                         await self._append_message(
@@ -1013,15 +1148,37 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         )
                         await self._mark_first_user_transcript(call_id)
 
+                        # ── Consume speculative result if available ──────────
+                        # The speculative task may have precomputed analysis+response
+                        # while we were waiting in the confirmation window.
+                        _cached_analysis = None
+                        _cached_response_text = None
+                        if _spec_result and _spec_result.get("utterance") == utterance:
+                            _cached_analysis = _spec_result["analysis"]
+                            _cached_response_text = _spec_result.get("response_text")
+                            _spec_result = None
+                            logger.info("🎤 [%s] SPEC_HIT ✅ (skipping LLM calls)", call_id)
+                        elif _spec_result:
+                            # Utterance mismatch — stale speculative result, discard
+                            logger.info(
+                                "🎤 [%s] SPEC_STALE: expected %r got %r",
+                                call_id, _spec_result.get("utterance", "")[:40], utterance[:40],
+                            )
+                            _spec_result = None
+
                         _t_analyze = perf_counter()
-                        analysis = await self._analyze_candidate_turn(
-                            transcript=utterance,
-                            state=state,
-                        )
-                        logger.info(
-                            "🎤 [%s] ANALYZE: %.0fms result=%s",
-                            call_id, (perf_counter() - _t_analyze) * 1000, analysis,
-                        )
+                        if _cached_analysis is not None:
+                            analysis = _cached_analysis
+                            logger.info("🎤 [%s] ANALYZE: 0ms (cached) result=%s", call_id, analysis)
+                        else:
+                            analysis = await self._analyze_candidate_turn(
+                                transcript=utterance,
+                                state=state,
+                            )
+                            logger.info(
+                                "🎤 [%s] ANALYZE: %.0fms result=%s",
+                                call_id, (perf_counter() - _t_analyze) * 1000, analysis,
+                            )
 
                         state_changed = False
                         if analysis.request_termination:
@@ -1087,31 +1244,89 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             stop_event.set()
                             return
 
+                        # ══════════════════════════════════════════════════════
+                        # CODE-DRIVEN QUESTION SEQUENCING
+                        # The LLM never decides which question to ask next.
+                        # Code tracks position and advances after ANY response.
+                        # LLM is only called for: opener, clarifications, follow-ups.
+                        # ══════════════════════════════════════════════════════
+
                         _t_gen = perf_counter()
-                        try:
-                            response_text = await self._generate_next_turn(
-                                call_id=call_id,
-                                resume=resume,
-                                job=job,
-                                questions=questions,
-                                state=state,
-                            )
-                        except Exception as gen_exc:
-                            logger.exception(
-                                "🎤 [%s] GENERATE FAILED after %.0fms: %s",
-                                call_id, (perf_counter() - _t_gen) * 1000, gen_exc,
-                            )
-                            return
-                        logger.info(
-                            "🎤 [%s] GENERATE: %.0fms response=%r",
-                            call_id, (perf_counter() - _t_gen) * 1000, (response_text or "")[:100],
-                        )
+                        response_text: str = ""
+
+                        words = len(utterance.split())
+                        is_clarification = analysis.is_clarification
+
+                        if not state.consent_granted:
+                            # Pre-consent: LLM generates the consent prompt
+                            if _cached_response_text is not None:
+                                response_text = _cached_response_text
+                                logger.info("🎤 [%s] GENERATE: 0ms (cached, pre-consent)", call_id)
+                            else:
+                                try:
+                                    response_text = await self._generate_next_turn(
+                                        call_id=call_id, resume=resume, job=job,
+                                        questions=questions, state=state,
+                                    )
+                                except Exception as e:
+                                    logger.exception("🎤 [%s] GENERATE FAILED: %s", call_id, e)
+                                    return
+                                logger.info("🎤 [%s] GENERATE: %.0fms (pre-consent) response=%r",
+                                    call_id, (perf_counter()-_t_gen)*1000, response_text[:80])
+
+                        elif is_clarification:
+                            # Candidate asked for repeat → replay current question verbatim
+                            if 0 <= _current_q_idx < len(questions):
+                                response_text = questions[_current_q_idx].question_text
+                                logger.info("🎤 [%s] CLARIFICATION: replaying Q%d verbatim",
+                                    call_id, _current_q_idx + 1)
+                            else:
+                                # Opener clarification — use LLM
+                                try:
+                                    response_text = await self._generate_next_turn(
+                                        call_id=call_id, resume=resume, job=job,
+                                        questions=questions, state=state,
+                                    )
+                                except Exception as e:
+                                    logger.exception("🎤 [%s] GENERATE FAILED: %s", call_id, e)
+                                    return
+
+                        elif (words < 5 and not _has_followed_up and _current_q_idx >= 0
+                              and _current_q_idx + 1 < len(questions)):
+                            # Very short answer AND no follow-up yet AND not the last question
+                            # → use a fixed neutral prompt (no LLM — prevents LLM generating
+                            # the next question instead of a follow-up).
+                            _has_followed_up = True
+                            response_text = _FOLLOWUP_PHRASES[_followup_phrase_idx % len(_FOLLOWUP_PHRASES)]
+                            _followup_phrase_idx += 1
+                            logger.info("🎤 [%s] FOLLOWUP: short answer (%d words) on Q%d → %r",
+                                call_id, words, _current_q_idx + 1, response_text)
+
+                        else:
+                            # ── ADVANCE to next question (code-driven, no LLM judgment) ──
+                            _has_followed_up = False
+                            next_idx = _current_q_idx + 1
+
+                            if next_idx >= len(questions):
+                                # All questions covered → say goodbye
+                                response_text = (
+                                    f"Thank you for your answers, "
+                                    f"{resume.candidate_name or 'Sarthak'}. "
+                                    f"It was great speaking with you!"
+                                )
+                                logger.info("🎤 [%s] ALL_DONE: advancing past last Q → goodbye", call_id)
+                            else:
+                                # Set next question text directly from DB — no LLM
+                                _current_q_idx = next_idx
+                                response_text = questions[next_idx].question_text
+                                logger.info("🎤 [%s] ADVANCING → Q%d: %r",
+                                    call_id, next_idx + 1, response_text[:70])
+
                         if not response_text:
-                            logger.warning("🎤 [%s] GENERATE returned empty response — skipping turn", call_id)
+                            logger.warning("🎤 [%s] response_text empty — skipping turn", call_id)
                             return
 
-                        # Fix 3 & 4: strip LLM role-prefix hallucinations + add
-                        # TTS-friendly pauses before the candidate's first name.
+                        # TTS-friendly text prep (strip role prefixes, name pause)
                         response_text = _prepare_tts_text(
                             response_text,
                             resume.candidate_name if resume else None,
@@ -1119,14 +1334,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         if not response_text:
                             return
 
-                        # ─── Cache-text reconciliation (fixes "AI repeats Q3 second sentence") ───
-                        # When the LLM drops a sentence from a multi-part question (e.g. asks only
-                        # "Have you used Git before?" out of "Have you used Git? What do you use it
-                        # for?"), the cache prefix-matches and plays the FULL audio — but if we
-                        # store the LLM's truncated text in the DB, the LLM thinks only half the
-                        # question was asked and generates the missing half as a redundant follow-up.
-                        # Substitute the response_text with the matched question's full text so
-                        # what's stored matches what the candidate actually heard.
+                        # Cache reconciliation: if text is a prefix of a cached question,
+                        # substitute the full cached text (handles multi-sentence questions
+                        # when code already set the full text — usually a no-op here).
                         try:
                             _pre_check = await self.runtime_selection.select_audio_source(
                                 assistant_text=response_text,
@@ -1140,13 +1350,45 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                 and _pre_check.asset.text
                                 and _pre_check.asset.text.strip() != response_text.strip()
                             ):
-                                logger.info(
-                                    "🎤 [%s] CACHE_RECONCILE: %r → %r",
-                                    call_id, response_text[:60], _pre_check.asset.text[:60],
-                                )
+                                logger.info("🎤 [%s] CACHE_RECONCILE: %r → %r",
+                                    call_id, response_text[:60], _pre_check.asset.text[:60])
                                 response_text = _pre_check.asset.text
                         except Exception as exc:
                             logger.warning("🎤 [%s] CACHE_RECONCILE failed: %s", call_id, exc)
+
+                        # Safety-net: if response matches last AI turn 3x in a row
+                        # (shouldn't happen with code-driven sequencing, but keeps us safe)
+                        normalized_resp = " ".join(response_text.lower().split())
+                        if normalized_resp == " ".join(_last_ai_response.lower().split()):
+                            _consecutive_repeat_count += 1
+                        else:
+                            _consecutive_repeat_count = 0
+                            _last_ai_response = response_text
+                        if _consecutive_repeat_count >= 2:
+                            logger.warning("🎤 [%s] REPEAT_BREAK safety-net triggered", call_id)
+                            _consecutive_repeat_count = 0
+                            next_idx = _current_q_idx + 1
+                            if next_idx < len(questions):
+                                _current_q_idx = next_idx
+                                response_text = questions[next_idx].question_text
+                            else:
+                                response_text = (
+                                    f"Thank you for your time, "
+                                    f"{resume.candidate_name or 'Sarthak'}. Goodbye!"
+                                )
+                            _last_ai_response = response_text
+
+                        # ── Stale-turn guard ────────────────────────────────
+                        # A newer turn may have already played TTS (e.g. code-driven
+                        # advance fired while this turn's LLM was still running).
+                        # Discard this turn's response to avoid playing two questions.
+                        if my_seq < _last_played_seq:
+                            logger.info(
+                                "🎤 [%s] STALE_TURN: seq=%d < last_played=%d — discarding",
+                                call_id, my_seq, _last_played_seq,
+                            )
+                            return
+                        _last_played_seq = my_seq
 
                         if not state.consent_granted and self._is_consent_prompt(response_text):
                             state.consent_prompt_delivered = True
@@ -1159,7 +1401,10 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             item_key=f"deepgram-assistant-{uuid.uuid4()}",
                         )
 
-                        should_end_after_playback = state_changed and self._should_end_call(response_text)
+                        # End if LLM produced a closing phrase — regardless of state_changed.
+                        # (state_changed being False caused the AI to keep listening after
+                        # its own goodbye, leading to a redundant canned farewell.)
+                        should_end_after_playback = self._should_end_call(response_text)
                         if should_end_after_playback:
                             await self._play_terminal_message_and_end_call(
                                 websocket=websocket,
@@ -1187,23 +1432,30 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         )
 
                     async def flush_pending_fragment(expected_generation: int) -> None:
-                        nonlocal pending_fragment_text, pending_fragment_task
+                        nonlocal pending_fragment_text, pending_fragment_task, _spec_result
                         await asyncio.sleep(settings.PIPELINE_USER_FRAGMENT_GRACE_MS / 1000)
                         if expected_generation != pending_fragment_generation:
                             return
                         utterance = pending_fragment_text.strip()
                         pending_fragment_text = ""
                         pending_fragment_task = None
+                        # Speculative result was computed on a shorter fragment; the
+                        # accumulated utterance may differ — discard to avoid stale use.
+                        _spec_result = None
                         if utterance:
                             await process_user_utterance(utterance)
 
                     async def queue_or_process_user_utterance(utterance: str) -> None:
                         nonlocal pending_fragment_generation, pending_fragment_task, pending_fragment_text
+                        nonlocal _spec_result
                         cleaned = utterance.strip()
                         if not cleaned:
                             return
 
                         if self._looks_like_incomplete_user_fragment(cleaned):
+                            # Speculative result was for a shorter utterance; the
+                            # accumulated text will differ once more fragments come in.
+                            _spec_result = None
                             pending_fragment_text = " ".join(
                                 segment
                                 for segment in (pending_fragment_text, cleaned)
@@ -1233,6 +1485,11 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             # Handle VAD events for interruption
                             if data.get("type") == "SpeechStarted":
                                 logger.info("SpeechStarted from Deepgram (call=%s)", call_id)
+                                # NOTE: do NOT cancel spec/confirmation here.
+                                # SpeechStarted fires on ambient noise at 500ms endpointing
+                                # every few seconds and would permanently block answer
+                                # commitment. Real new speech is detected via is_final
+                                # transcripts below (_awaiting_new_speech flag).
                                 if self._assistant_audio_active:
                                     self._pending_barge_in = True
                                 continue
@@ -1273,6 +1530,23 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                     self._pending_barge_in = False
 
                             if data.get("is_final"):
+                                # Real speech content: if we're in a speculative window,
+                                # this means the candidate continued speaking after the
+                                # partial speech_final → cancel and restart fresh.
+                                if _awaiting_new_speech and not data.get("speech_final"):
+                                    # New speech confirmed (not the same speech_final event)
+                                    if _confirm_task and not _confirm_task.done():
+                                        _confirm_task.cancel()
+                                        _confirm_task = None
+                                    if _spec_task and not _spec_task.done():
+                                        _spec_task.cancel()
+                                        _spec_task = None
+                                    _spec_result = None
+                                    _awaiting_new_speech = False
+                                    logger.info(
+                                        "🎤 [%s] SPEC_CANCELLED: new speech after partial turn",
+                                        call_id,
+                                    )
                                 finalized_segments.append(transcript)
                             if not data.get("speech_final"):
                                 continue
@@ -1280,6 +1554,7 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             utterance = " ".join(finalized_segments).strip() or transcript
                             finalized_segments = []
                             self._pending_barge_in = False
+                            _awaiting_new_speech = False  # reset before starting new cycle
 
                             # Fix 2: Duration-based turn gate.
                             # Deepgram includes start/duration on each Results event.
@@ -1315,13 +1590,57 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                                     return
                                 continue
 
-                            await queue_or_process_user_utterance(utterance)
+                            # ── Speculative execution ───────────────────────
+                            # At 500ms endpointing, we start the LLM now and
+                            # commit only after the confirmation window elapses.
+                            # If the candidate resumes (SpeechStarted), both tasks
+                            # are cancelled and the result is discarded — zero
+                            # interruption risk.
+                            # (_spec_task/_confirm_task/_spec_result are locals of
+                            # receive_stt_events; no nonlocal needed here)
+
+                            # Cancel any leftover speculative work from previous turn
+                            if _spec_task and not _spec_task.done():
+                                _spec_task.cancel()
+                            if _confirm_task and not _confirm_task.done():
+                                _confirm_task.cancel()
+
+                            if settings.PIPELINE_SPECULATIVE_CONFIRMATION_MS > 0:
+                                # Start LLM speculatively (runs during the window)
+                                _spec_task = asyncio.create_task(
+                                    _speculative_compute(utterance)
+                                )
+
+                                # Commit after confirmation window
+                                async def _do_confirm(utt: str) -> None:
+                                    await asyncio.sleep(
+                                        settings.PIPELINE_SPECULATIVE_CONFIRMATION_MS / 1000.0
+                                    )
+                                    logger.info(
+                                        "🎤 [%s] SPEC_CONFIRMED (silence held %.0fms+%.0fms)",
+                                        call_id,
+                                        settings.PIPELINE_STT_ENDPOINTING_MS,
+                                        settings.PIPELINE_SPECULATIVE_CONFIRMATION_MS,
+                                    )
+                                    await queue_or_process_user_utterance(utt)
+
+                                _confirm_task = asyncio.create_task(_do_confirm(utterance))
+                                # Ready to detect real new speech via is_final
+                                _awaiting_new_speech = True
+                            else:
+                                # Speculative mode disabled — original behavior
+                                await queue_or_process_user_utterance(utterance)
+
                             if stop_event.is_set():
                                 return
 
                     finally:
                         if pending_fragment_task and not pending_fragment_task.done():
                             pending_fragment_task.cancel()
+                        if _spec_task and not _spec_task.done():
+                            _spec_task.cancel()
+                        if _confirm_task and not _confirm_task.done():
+                            _confirm_task.cancel()
                         log_debug("STT receiver task finished")
 
                 stt_task = asyncio.create_task(receive_stt_events())

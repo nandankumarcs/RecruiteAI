@@ -65,10 +65,19 @@ class Settings(BaseSettings):
     SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS: float = 30.0
     PIPELINE_FILLERS_ENABLED: bool = False   # set True to re-enable filler phrases
     PIPELINE_TTS_JITTER_BUFFER_MS: int = 200
-    PIPELINE_STT_ENDPOINTING_MS: int = 1500   # 500→1500: covers natural thinking pauses
+    PIPELINE_STT_ENDPOINTING_MS: int = 1500   # default conservative; override in .env (e.g. 500 for speculative mode)
     PIPELINE_STT_UTTERANCE_END_MS: int = 2500  # 1000→2500: gives candidate time to finish
     PIPELINE_USER_FRAGMENT_GRACE_MS: int = 2000 # 1500→2000: covers slower speakers
     PIPELINE_MIN_TURN_SECONDS: float = 1.5     # 1.0→1.5: require 1.5s of speech before LLM
+    # Speculative LLM execution: fire LLM at endpointing silence, commit after this extra window.
+    # Net silence before AI responds = PIPELINE_STT_ENDPOINTING_MS + PIPELINE_SPECULATIVE_CONFIRMATION_MS.
+    # Set to 0 to disable speculative mode (commit immediately at endpointing).
+    PIPELINE_SPECULATIVE_CONFIRMATION_MS: int = 1000
+    # Word-count based progression: after candidate speaks >= this many words
+    # since the current question was asked, force-advance regardless of answer
+    # quality. Prevents LLM from looping on semantically "weak" answers from
+    # ESL candidates who may phrase responses differently.
+    PIPELINE_PROGRESSION_MIN_WORDS: int = 20
 
     # --- Twilio Telephony ---
     TWILIO_ACCOUNT_SID: str = ""

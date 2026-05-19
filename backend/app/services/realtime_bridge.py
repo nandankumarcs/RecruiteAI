@@ -56,6 +56,7 @@ class CandidateTurnAnalysis:
     grant_consent: bool = False
     request_termination: bool = False
     off_topic_request: bool = False
+    is_clarification: bool = False  # candidate asked to repeat/clarify — stay on current Q
 
 
 class RealtimeBridge:
@@ -179,20 +180,16 @@ class RealtimeBridge:
             )
         else:
             phase_rules.append(
-                "Consent granted. Ask exactly ONE interview question from the list below. "
-                "Copy the question text VERBATIM — every word, every sentence, every punctuation mark. "
-                "If a question has multiple sentences (e.g. 'Have you used Git? What do you use it for?'), "
-                "you MUST include ALL of them as a single compound prompt — do NOT drop any sentence. "
-                "Do not add a preamble, greeting, or paraphrase. Then wait for a full answer. "
-                "EXCEPTION: if the candidate explicitly asks you to rephrase, simplify, or clarify the current "
-                "question (not just 'sorry?' or 'pardon?'), you MAY rephrase it once in simpler words while "
-                "keeping the same meaning."
+                "Consent granted. The next question to ask will be provided to you — say it word for word, "
+                "no preamble, no paraphrase. Wait for the candidate to answer before saying anything else. "
+                "EXCEPTION: if the candidate explicitly asks you to rephrase or simplify, "
+                "you MAY rephrase once in simpler words."
             )
 
         if state.off_topic_count > 0 and not state.termination_requested:
-            phase_rules.append("Candidate is off-topic. Politely redirect to the interview.")
-        if state.off_topic_count >= 2 and not state.termination_requested:
-            phase_rules.append("Refusal to engage. Politely end the call.")
+            phase_rules.append("Candidate has gone off-topic. Politely redirect to the interview.")
+        if state.off_topic_count >= 3 and not state.termination_requested:
+            phase_rules.append("Repeated off-topic. Politely end the call.")
 
         return (
             "Persona: Warm, professional recruiter. Speak naturally and clearly.\n"
@@ -205,15 +202,10 @@ class RealtimeBridge:
             f"{question_lines or '1. Tell me about your background.'}\n\n"
             "Critical Rules:\n"
             "- No consent = No interview questions.\n"
-            "- **PROGRESSION**: Track which questions in the list have already been asked (see transcript above). After the candidate gives a substantive answer addressing the current question, advance to the NEXT unasked question — do NOT re-ask the same question even if the candidate ends with a tag/counter-question.\n"
-            "- A question is 'answered' if the candidate's reply contains relevant content on the topic, even partial. Tag questions like 'What do you think?' or 'Did you want to know more?' at the end of an answer are NOT requests to re-ask — acknowledge briefly or ignore, then move on.\n"
-            "- If answer is too short (yes/ok) and you haven't already followed up, ask one short follow-up.\n"
-            "- If the candidate sounds mid-sentence, incomplete, or paused briefly, wait for continuation instead of interrupting.\n"
-            "- If the candidate explicitly says 'sorry', 'pardon', 'can you repeat', or asks WHAT you said (no answer content), restate the SAME question once.\n"
-            "- Treat clarification, confusion, or requests to repeat as continued engagement, not refusal.\n"
-            "- Decline non-interview requests (poems/stories/jokes) once, then hang up if they persist.\n"
-            "- Do not end the call unless the candidate clearly refuses, asks to stop, or all interview questions are complete.\n"
-            "- After final question is answered, say goodbye and end.\n"
+            "- Say each question exactly as given — no preamble, no commentary before or after.\n"
+            "- If the candidate says 'sorry', 'pardon', or asks to repeat: restate the current question once, unchanged.\n"
+            "- Do not end the call unless the candidate clearly refuses to continue or all questions are done.\n"
+            "- Decline entertainment requests (jokes/poems) once, then end the call if they persist.\n"
             "- NEVER begin your response with 'User:', 'Candidate:', 'Assistant:', or any role prefix. Speak directly.\n"
             "- NEVER complete or predict the candidate's unfinished sentence. Wait for them to finish.\n"
             "- Your response is ONLY your next spoken words. Do not include dialogue labels or transcript formatting.\n\n"
@@ -263,13 +255,27 @@ class RealtimeBridge:
     @staticmethod
     def _should_end_call(content: str) -> bool:
         lowered = content.lower()
-        closing_signals = [
+        # Strong single signals — any one of these alone ends the call
+        strong_signals = [
             "thank you for your time",
+            "thank you for your answers",
+            "great speaking with you",
+            "great chatting with you",
+            "that concludes",
+            "we will be in touch",
             "we'll be in touch",
+        ]
+        if any(s in lowered for s in strong_signals):
+            return True
+        # Weaker signals — need 2 together
+        weak_signals = [
             "have a great day",
             "goodbye",
+            "best of luck",
+            "all the best",
+            "take care",
         ]
-        return sum(1 for signal in closing_signals if signal in lowered) >= 2
+        return sum(1 for s in weak_signals if s in lowered) >= 2
 
     @staticmethod
     def _normalize_text(content: str) -> str:
@@ -356,6 +362,10 @@ class RealtimeBridge:
             "okay bye",
             "ok bye",
             "thank you bye",
+            "take care",
+            "have a good day",
+            "have a great day",
+            "talk to you later",
             "not interested",
             "don't call",
             "do not call",
@@ -406,6 +416,7 @@ class RealtimeBridge:
         clarification_phrases = (
             "who is this",
             "can you repeat",
+            "could you repeat",
             "please repeat",
             "what role",
             "which company",
@@ -417,9 +428,14 @@ class RealtimeBridge:
             "can you rephrase",
             "rephrase the question",
             "say that again",
+            "say it again",
+            "didn't catch that",
+            "didn't hear",
+            "could not hear",
+            "couldn't hear",
         )
         if any(phrase in text for phrase in clarification_phrases):
-            return CandidateTurnAnalysis()
+            return CandidateTurnAnalysis(is_clarification=True)
 
         # ─── NEGATIVE FAST-PATH (Finding 7 Option C) ─────────────────────────────
         # Ambiguous "soft termination" patterns — recognise them but defer to LLM
