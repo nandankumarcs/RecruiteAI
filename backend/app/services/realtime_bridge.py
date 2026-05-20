@@ -378,6 +378,16 @@ class RealtimeBridge:
             "call me later",
             "busy right now",
             "not a good time",
+            "stop",
+            "quit",
+            "enough",
+            "no thanks",
+            "not now",
+            "i refuse",
+            "i'm done",
+            "i am done",
+            "please stop",
+            "end this",
         )
         if any(phrase in text for phrase in termination_phrases):
             return CandidateTurnAnalysis(request_termination=True)
@@ -484,7 +494,12 @@ class RealtimeBridge:
                 "i have",
                 "i have not",
             )
-            if word_count >= 4 or normalized_for_match in factual_short_answers:
+            # Any post-consent answer that survived all termination/clarification
+            # checks above is a substantive answer regardless of length.
+            # word_count >= 1 means: even "No." / "Yes." get neutral fast-path
+            # instead of going to LLM (which misclassifies short answers as
+            # request_termination). Explicit termination is already caught above.
+            if word_count >= 1 or normalized_for_match in factual_short_answers:
                 return CandidateTurnAnalysis()  # neutral; no LLM call
 
         return None

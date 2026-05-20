@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from time import perf_counter
 import uuid
@@ -1643,6 +1644,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                             _confirm_task.cancel()
                         log_debug("STT receiver task finished")
 
+                # Accumulate raw μ-law frames from Exotel for post-call local recording
+                _recording_chunks: list[bytes] = []
+
                 stt_task = asyncio.create_task(receive_stt_events())
                 try:
                     while not stop_event.is_set():
@@ -1719,7 +1723,9 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
                         elif event == "media":
                             audio_payload = (data.get("media") or {}).get("payload")
                             if audio_payload:
-                                await stt_ws.send(base64.b64decode(audio_payload))
+                                raw = base64.b64decode(audio_payload)
+                                await stt_ws.send(raw)
+                                _recording_chunks.append(raw)
                                 # Yield so assistant-side tasks (like TTS) can run even
                                 # under sustained media load.
                                 await asyncio.sleep(0)
@@ -1739,6 +1745,34 @@ class DeepgramOpenAIPipelineRuntime(RealtimeBridge):
 
                 finally:
                     stt_task.cancel()
+
+                # Save caller-side audio as WAV for post-call Whisper analysis
+                if _recording_chunks and call_id:
+                    try:
+                        import wave
+                        try:
+                            import audioop as _audioop
+                        except ImportError:
+                            import audioop_lts as _audioop  # type: ignore
+                        recordings_dir = os.path.join(settings.STORAGE_LOCAL_PATH, "call_recordings")
+                        os.makedirs(recordings_dir, exist_ok=True)
+                        wav_path = os.path.join(recordings_dir, f"{call_id}.wav")
+                        raw_mulaw = b"".join(_recording_chunks)
+                        pcm16 = _audioop.ulaw2lin(raw_mulaw, 2)
+                        with wave.open(wav_path, "wb") as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2)
+                            wf.setframerate(8000)
+                            wf.writeframes(pcm16)
+                        logger.info("Saved call recording: %s (%d bytes)", wav_path, len(raw_mulaw))
+                        async with self._session_factory()() as session:
+                            call_record = await session.get(Call, call_id)
+                            if call_record is not None:
+                                call_record.recording_path = wav_path
+                                call_record.recording_url = f"{settings.PUBLIC_URL}/api/calls/{call_id}/recording"
+                                await session.commit()
+                    except Exception as _rec_err:
+                        logger.warning("Failed to save call recording: %s", _rec_err)
 
                 if call_id:
                     async with self._session_factory()() as session:

@@ -378,12 +378,13 @@ export function CallDetail() {
   }, [call?.transcript, call?.messages]);
 
   const transcriptBottomRef = useRef<HTMLDivElement>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const isLive = ["queued", "ringing", "in_progress"].includes(call?.status ?? "");
 
-  // Auto-scroll transcript to bottom whenever new messages arrive during a live call
+  // Auto-scroll transcript container (not the page) when new messages arrive during a live call
   useEffect(() => {
-    if (isLive && transcriptBottomRef.current) {
-      transcriptBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    if (isLive && transcriptScrollRef.current) {
+      transcriptScrollRef.current.scrollTop = transcriptScrollRef.current.scrollHeight;
     }
   }, [transcriptLines, isLive]);
 
@@ -629,7 +630,7 @@ export function CallDetail() {
                   <div className="absolute top-0 left-0 right-0 h-10 bg-gradient-to-b from-card to-transparent z-10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" />
                   <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-card to-transparent z-10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" />
                   
-                  <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar py-2">
+                  <div ref={transcriptScrollRef} className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar py-2">
                     {transcriptLines.map((line) => {
                       const isAssistant = /^ai|assistant$/i.test(line.speaker);
                       const isActive = activeSegmentId === line.id;

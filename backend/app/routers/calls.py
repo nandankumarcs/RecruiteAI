@@ -399,20 +399,17 @@ async def get_call_recording(
     if not call.recording_url:
         raise NotFoundError(resource="Recording")
 
-    # Browser simulator recordings live on local disk, written by
-    # SimulatorCallRecorder. Short-circuit before the external-URL fetch path
-    # below, which would otherwise try to fetch our own /api/calls/.../recording
-    # URL recursively.
-    if call.provider == "browser":
+    # Serve local recordings (browser simulator or Exotel local WAV capture)
+    # before trying to fetch an external URL, to avoid recursive self-fetches.
+    if call.recording_path:
         from pathlib import Path
-        if not call.recording_path:
-            raise NotFoundError(resource="Recording")
-        local_path = Path(settings.STORAGE_LOCAL_PATH) / call.recording_path
-        if not local_path.exists():
-            raise NotFoundError(resource="Recording")
-        with open(local_path, "rb") as f:
-            content = f.read()
-        return Response(content=content, media_type="audio/wav")
+        local_path = Path(call.recording_path) if Path(call.recording_path).is_absolute() \
+            else Path(settings.STORAGE_LOCAL_PATH) / call.recording_path
+        if local_path.exists():
+            with open(local_path, "rb") as f:
+                content = f.read()
+            media_type = "audio/wav" if str(local_path).endswith(".wav") else "audio/mpeg"
+            return Response(content=content, media_type=media_type)
 
     recording_url = call.recording_url
     if not recording_url.endswith(".mp3") and not recording_url.endswith(".wav"):
