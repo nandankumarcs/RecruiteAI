@@ -101,6 +101,8 @@ class Settings(BaseSettings):
     VOICE_RUNTIME: str = "openai_realtime"  # openai_realtime, deepgram_openai
     PIPELINE_REASONING_PROVIDER: str = "openai"
     TTS_PROVIDER: str = "deepgram"  # deepgram, sarvam
+    STT_PROVIDER: str = "deepgram"  # deepgram, openai
+    OPENAI_STT_TURN_DETECTION_MODE: str = "server_vad"  # server_vad, manual_commit
 
 
     # --- LangSmith ---

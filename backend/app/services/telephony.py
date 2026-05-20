@@ -126,10 +126,11 @@ class ExotelTelephonyProvider:
             clean_number = "91" + clean_number
         
         resume_id = answer_url.rstrip("/").split("/")[-1]
+        exotel_url = settings.EXOTEL_FLOW_URL or answer_url
         payload = {
             "From": clean_number,  # The Customer
             "CallerId": settings.EXOTEL_PHONE_NUMBER, # The ExoPhone
-            "Url": settings.EXOTEL_FLOW_URL,
+            "Url": exotel_url,
             "CustomField": resume_id,
             "StatusCallback": status_callback_url,
             "Record": "true",
