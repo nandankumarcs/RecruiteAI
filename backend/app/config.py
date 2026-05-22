@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     SEED_USER_PASSWORD: str = "Password@123"
     SEED_USER_NAME: str = "Dinesh Tomar"
 
+    # --- Agent provider ---
+    # "openai" uses OPENAI_TEXT_MODEL; "groq" uses GROQ_AGENT_MODEL via Groq's OpenAI-compatible API.
+    AGENT_PROVIDER: str = "openai"
+    GROQ_API_KEY: str = ""
+    GROQ_AGENT_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+
     # --- OpenAI ---
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"

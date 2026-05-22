@@ -96,12 +96,7 @@ class CallV2RuntimeFactory:
             keyterms=build_deepgram_keyterms(context),
         )
         tts_engine = _tts_engine_from_settings(settings)
-        agent_runner: AgentRunner = StructuredModelAgentRunner(
-            model=OpenAIChatStructuredModel(
-                api_key=settings.OPENAI_API_KEY,
-                model=settings.OPENAI_TEXT_MODEL or settings.OPENAI_MODEL,
-            )
-        )
+        agent_runner: AgentRunner = _agent_runner_from_settings(settings)
 
         return CallSession(
             config=CallSessionConfig(
@@ -880,6 +875,31 @@ async def _persist_call_v2_recording(call_id: str, recorder: SimulatorCallRecord
         call_id,
         full_path,
         len(wav_bytes),
+    )
+
+
+def _agent_runner_from_settings(settings) -> AgentRunner:
+    provider = (settings.AGENT_PROVIDER or "openai").lower()
+    if provider == "groq":
+        if not settings.GROQ_API_KEY:
+            logger.warning("AGENT_PROVIDER=groq but GROQ_API_KEY is not set; falling back to openai")
+        else:
+            model = settings.GROQ_AGENT_MODEL
+            logger.info("agent.provider=groq model=%s", model)
+            return StructuredModelAgentRunner(
+                model=OpenAIChatStructuredModel(
+                    api_key=settings.GROQ_API_KEY,
+                    model=model,
+                    base_url=settings.GROQ_BASE_URL,
+                )
+            )
+    model = settings.OPENAI_TEXT_MODEL or settings.OPENAI_MODEL
+    logger.info("agent.provider=openai model=%s", model)
+    return StructuredModelAgentRunner(
+        model=OpenAIChatStructuredModel(
+            api_key=settings.OPENAI_API_KEY,
+            model=model,
+        )
     )
 
 

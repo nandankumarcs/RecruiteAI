@@ -15,17 +15,25 @@ class OpenAIStructuredModelError(RuntimeError):
 
 @dataclass(slots=True)
 class OpenAIChatStructuredModel:
-    """Uses OpenAI JSON mode behind the provider-neutral v2 model contract."""
+    """Uses OpenAI-compatible JSON mode behind the provider-neutral v2 model contract.
+
+    Works with any OpenAI-compatible API (OpenAI, Groq, etc.) by optionally
+    accepting a custom base_url.
+    """
 
     api_key: str
     model: str
     temperature: float = 0.2
     max_tokens: int = 320
+    base_url: str | None = None
     client: Any | None = None
 
     def __post_init__(self) -> None:
         if self.client is None:
-            self.client = AsyncOpenAI(api_key=self.api_key)
+            kwargs: dict[str, Any] = {"api_key": self.api_key}
+            if self.base_url:
+                kwargs["base_url"] = self.base_url
+            self.client = AsyncOpenAI(**kwargs)
 
     async def ainvoke(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         response = await self.client.chat.completions.create(

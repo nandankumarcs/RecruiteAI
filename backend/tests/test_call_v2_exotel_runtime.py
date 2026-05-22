@@ -182,6 +182,10 @@ async def test_exotel_runtime_disables_raw_audio_tentative_cancellation(monkeypa
         OPENAI_MODEL = "fallback-model"
         TTS_PROVIDER = "openai"
         COMPANY_NAME = "Test Corp"
+        AGENT_PROVIDER = "openai"
+        GROQ_API_KEY = ""
+        GROQ_AGENT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+        GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
     monkeypatch.setattr("app.call_v2.runtime.get_settings", lambda: _Settings())
 
@@ -259,6 +263,10 @@ async def test_browser_runtime_uses_browser_simulator_adapter(monkeypatch):
         OPENAI_MODEL = "fallback-model"
         TTS_PROVIDER = "openai"
         COMPANY_NAME = "Test Corp"
+        AGENT_PROVIDER = "openai"
+        GROQ_API_KEY = ""
+        GROQ_AGENT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+        GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
     monkeypatch.setattr("app.call_v2.runtime.get_settings", lambda: _Settings())
 
