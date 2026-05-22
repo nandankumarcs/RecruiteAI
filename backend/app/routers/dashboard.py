@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
 from app.database import get_db
@@ -16,6 +17,20 @@ from app.schemas.dashboard import DashboardMetricsResponse
 from app.services.pricing import hydrate_cost_breakdown
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+
+def _delta_ms(metrics: dict, start_key: str, end_key: str) -> float | None:
+    start = metrics.get(start_key)
+    end = metrics.get(end_key)
+    if not start or not end:
+        return None
+    try:
+        s = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        e = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        delta = (e - s).total_seconds() * 1000.0
+        return delta if delta > 0 else None
+    except (ValueError, TypeError):
+        return None
 
 
 @router.get("/metrics", response_model=DashboardMetricsResponse)
@@ -55,20 +70,13 @@ async def get_dashboard_metrics(
 
     latencies = []
     for call in call_rows:
-        metrics = call.latency_metrics or {}
-        start = metrics.get("stream_connected_at")
-        first_audio = metrics.get("first_assistant_audio_at")
-        if start and first_audio:
-            try:
-                from datetime import datetime
-                # Handle isoformat strings
-                start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                audio_dt = datetime.fromisoformat(first_audio.replace("Z", "+00:00"))
-                delta = (audio_dt - start_dt).total_seconds() * 1000.0
-                if delta > 0:
-                    latencies.append(delta)
-            except (ValueError, TypeError):
-                continue
+        delta = _delta_ms(
+            call.latency_metrics or {},
+            "stream_connected_at",
+            "first_assistant_audio_at",
+        )
+        if delta is not None:
+            latencies.append(delta)
 
     return DashboardMetricsResponse(
         total_jobs=len(job_rows),
@@ -83,16 +91,9 @@ async def get_dashboard_metrics(
         average_cost_per_call_usd=(
             round(sum(estimated_costs) / len(estimated_costs), 4) if estimated_costs else None
         ),
-        realtime_calls=sum(
-            1
-            for call in call_rows
-            if call.voice_runtime == "openai_realtime"
-        ),
-        pipeline_calls=sum(
-            1
-            for call in call_rows
-            if call.voice_runtime == "deepgram_openai"
-        ),
+        realtime_calls=sum(1 for call in call_rows if call.voice_runtime == "openai_realtime"),
+        pipeline_calls=sum(1 for call in call_rows if call.voice_runtime == "deepgram_openai"),
+        v2_calls=sum(1 for call in call_rows if call.voice_runtime == "call_v2"),
         average_latency_ms=(sum(latencies) / len(latencies) if latencies else None),
     )
 
@@ -102,15 +103,12 @@ async def get_runtime_benchmark(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Phase 9: Side-by-side runtime benchmark.
+    """Per-runtime aggregate metrics over all completed calls for this user.
 
-    Returns per-runtime aggregate metrics (cost, latency, quality) over all
-    completed calls owned by the authenticated user so you can make an
-    evidence-based choice between openai_realtime and deepgram_openai.
+    Groups calls by their actual voice_runtime label, so new runtimes appear
+    automatically without code changes. Each entry reports cost, latency, and
+    quality independently.
     """
-    from datetime import datetime
-
     call_rows = (
         await db.execute(
             select(Call)
@@ -119,20 +117,7 @@ async def get_runtime_benchmark(
         )
     ).scalars().all()
 
-    def _delta_ms(metrics: dict, start_key: str, end_key: str) -> float | None:
-        start = metrics.get(start_key)
-        end = metrics.get(end_key)
-        if not start or not end:
-            return None
-        try:
-            s = datetime.fromisoformat(start.replace("Z", "+00:00"))
-            e = datetime.fromisoformat(end.replace("Z", "+00:00"))
-            delta = (e - s).total_seconds() * 1000.0
-            return delta if delta > 0 else None
-        except (ValueError, TypeError):
-            return None
-
-    runtimes = ["openai_realtime", "deepgram_openai"]
+    runtimes = sorted({c.voice_runtime for c in call_rows if c.voice_runtime})
     result: dict = {}
 
     for runtime in runtimes:
@@ -147,13 +132,11 @@ async def get_runtime_benchmark(
             for c in calls
         ]
 
-        # time-to-first-audio (stream_connected_at → first_assistant_audio_at)
         ttfa_values = [
             v for c in calls
             if (v := _delta_ms(c.latency_metrics or {}, "stream_connected_at", "first_assistant_audio_at")) is not None
         ]
 
-        # answer latency (call_requested_at → call_answered_at)
         answer_values = [
             v for c in calls
             if (v := _delta_ms(c.latency_metrics or {}, "call_requested_at", "call_answered_at")) is not None
@@ -165,7 +148,12 @@ async def get_runtime_benchmark(
             if isinstance(c.ai_evaluation, dict) and c.ai_evaluation.get("overall_score") is not None
         ]
 
-        cost_breakdown_agg: dict[str, float] = {"llm_usd": 0.0, "stt_usd": 0.0, "tts_usd": 0.0, "telephony_usd": 0.0}
+        cost_breakdown_agg: dict[str, float] = {
+            "llm_usd": 0.0,
+            "stt_usd": 0.0,
+            "tts_usd": 0.0,
+            "telephony_usd": 0.0,
+        }
         for c in calls:
             bd = hydrate_cost_breakdown(
                 existing=c.cost_breakdown,
@@ -195,21 +183,4 @@ async def get_runtime_benchmark(
             },
         }
 
-    # Compute savings delta (openai_realtime as reference)
-    rt_cost = result.get("openai_realtime", {}).get("cost", {}).get("average_per_call_usd")
-    dg_cost = result.get("deepgram_openai", {}).get("cost", {}).get("average_per_call_usd")
-    savings_pct = None
-    if rt_cost and dg_cost and rt_cost > 0:
-        savings_pct = round((rt_cost - dg_cost) / rt_cost * 100, 1)
-
-    return {
-        "runtimes": result,
-        "comparison": {
-            "cost_savings_pct_vs_realtime": savings_pct,
-            "recommendation": (
-                "deepgram_openai" if (savings_pct is not None and savings_pct > 10) else
-                "openai_realtime" if (savings_pct is not None and savings_pct < 0) else
-                "insufficient_data"
-            ),
-        },
-    }
+    return {"runtimes": result}

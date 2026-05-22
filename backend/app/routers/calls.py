@@ -37,6 +37,7 @@ from app.services.call_evaluation import auto_evaluate_call_if_ready
 from app.services.observability import append_latency_marker
 from app.services.pricing import hydrate_cost_breakdown, merge_cost_breakdown
 from app.services.telephony import TelephonyService, get_telephony_service
+from app.call_v2.runtime import prewarm_call_v2_opener
 
 settings = get_settings()
 
@@ -219,11 +220,17 @@ async def start_call(
     ):
         await _verify_public_webhook_endpoint()
 
+    runtime_label = (
+        "call_v2"
+        if getattr(telephony, "provider_name", "") in ("exotel", "browser")
+        else settings.VOICE_RUNTIME
+    )
+
     call = Call(
         resume_id=resume.id,
         job_id=job.id,
         provider=getattr(telephony, "provider_name", None) or settings.TELEPHONY_PROVIDER,
-        voice_runtime=settings.VOICE_RUNTIME,
+        voice_runtime=runtime_label,
         provider_call_id=None,
         twilio_call_sid=None,
         status="pending",
@@ -234,7 +241,7 @@ async def start_call(
             provider=getattr(telephony, "provider_name", None) or settings.TELEPHONY_PROVIDER,
             notes=[
                 f"telephony_provider={getattr(telephony, 'provider_name', None) or settings.TELEPHONY_PROVIDER}",
-                f"voice_runtime={settings.VOICE_RUNTIME}",
+                f"voice_runtime={runtime_label}",
             ],
         ),
     )
@@ -259,7 +266,7 @@ async def start_call(
         provider=outbound.provider,
         notes=[
             f"telephony_provider={outbound.provider}",
-            f"voice_runtime={settings.VOICE_RUNTIME}",
+            f"voice_runtime={runtime_label}",
         ],
     )
     await db.commit()
@@ -273,6 +280,17 @@ async def start_call(
 
     if getattr(telephony, "enable_mock_progression", False) and outbound.provider == "mock":
         asyncio.create_task(_simulate_mock_call_progress(call.id))
+
+    # Pre-warm the opener TTS cache while Exotel dials out or the browser
+    # simulator popup loads.  By the time the candidate answers the opener
+    # audio is already cached → < 1s to first audio instead of 4–20s.
+    if runtime_label == "call_v2":
+        asyncio.create_task(
+            prewarm_call_v2_opener(
+                resume_id=resume.id,
+                provider=outbound.provider,
+            )
+        )
 
     # For the browser simulator, hand the dashboard a URL it can open in a new tab
     # so the candidate can "take the call". Only populated when this is a sim call.

@@ -23,8 +23,9 @@ from deepgram import (
 
 from app.debug_log import log_debug
 
-# Providers that speak the L16 8kHz PCM wire format (vs Twilio's μ-law).
-_L16_PROVIDERS = ("exotel", "browser")
+# Only the browser simulator still reaches this v1 runtime with L16 8 kHz PCM.
+# Exotel calls now go through the call-v2 runtime exclusively.
+_L16_PROVIDERS = ("browser",)
 
 from app.config import get_settings
 from app.models.call import Call

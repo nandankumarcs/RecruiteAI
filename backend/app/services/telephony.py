@@ -112,10 +112,11 @@ class ExotelTelephonyProvider:
             )
 
         import requests
-        
+        import logging as _logging
+        _tel_logger = _logging.getLogger(__name__)
+
         base_url = f"https://{settings.EXOTEL_SUBDOMAIN}/v1/Accounts/{settings.EXOTEL_ACCOUNT_SID}"
-        print(f"DEBUG: Exotel Url={answer_url}")
-        # Ensure number has +91 prefix for India if not already present
+        _tel_logger.info("exotel.outbound_call: answer_url=%s", answer_url)
         clean_number = to_number.strip()
         if clean_number.startswith("+"):
             clean_number = clean_number[1:]
@@ -138,8 +139,8 @@ class ExotelTelephonyProvider:
         
         try:
             response = requests.post(f"{base_url}/Calls/connect.json", auth=self._auth, data=payload, timeout=10)
-            print(f"DEBUG: Exotel Response Status: {response.status_code}")
-            print(f"DEBUG: Exotel Response Body: {response.text}")
+            _tel_logger.info("exotel.outbound_call: status=%d", response.status_code)
+            _tel_logger.debug("exotel.outbound_call: body=%s", response.text[:500])
             response.raise_for_status()
             data = response.json()
             call_sid = data.get("Call", {}).get("Sid", "") or f"EXO-{uuid.uuid4()}"

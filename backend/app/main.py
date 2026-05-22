@@ -29,6 +29,17 @@ from app.models import Job, Resume, InterviewQuestion, Call, CallMessage  # noqa
 from app.routers import auth, calls, dashboard, jobs, resumes, twilio_webhooks, exotel_webhooks, browser_webhooks
 
 settings = get_settings()
+
+# uvicorn's dictConfig only configures its own loggers.
+# Add a dedicated handler so app.* loggers always emit regardless of root config.
+_app_handler = logging.StreamHandler()
+_app_handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
+_app_handler.setLevel(logging.INFO)
+_app_logger = logging.getLogger("app")
+_app_logger.setLevel(logging.INFO)
+_app_logger.addHandler(_app_handler)
+_app_logger.propagate = False  # avoid double-printing via uvicorn root handler
+
 logger = logging.getLogger(__name__)
 
 
@@ -165,44 +176,41 @@ from app.services.telephony_cache import cache_exotel_call
 
 @app.api_route("/webhooks/exotel/voice/{resume_id}", methods=["GET", "POST"])
 async def exotel_voice_webhook(resume_id: str, request: Request):
-    """
-    Exotel voice webhook returning Twilio-style XML for streaming.
-    """
-    # Log everything for debugging
+    """Exotel voice webhook — returns the AgentStream WebSocket URL."""
     params = dict(request.query_params)
-    
-    # Exotel often sends parameters in the POST body as form data
     if request.method == "POST":
         try:
             form_data = await request.form()
             params.update(dict(form_data))
-        except Exception as e:
-            logger.warning(f"Failed to parse form data in Exotel webhook: {e}")
+        except Exception as exc:
+            logger.warning("exotel.voice_webhook: could not parse form data: %s", exc)
 
-    # PRIORITIZE CustomField from Query Parameters (Exotel reliably sends this)
     custom_field = params.get("CustomField")
     if custom_field and custom_field not in ["{{CustomField}}", ""]:
         resume_id = custom_field
-    
+
     call_sid = params.get("CallSid")
     if call_sid and resume_id and resume_id not in ["{{CustomField}}", "session", "passthru"]:
         cache_exotel_call(call_sid, resume_id)
-        print(f"!!! CACHED EXOTEL CALL !!! call_sid={call_sid}, resume_id={resume_id}", file=sys.stderr, flush=True)
+        logger.info("exotel.voice_webhook: cached call_sid=%s resume_id=%s", call_sid, resume_id)
 
-    print(f"!!! VOICE WEBHOOK HIT !!! resume_id={resume_id} (from custom_field: {custom_field})", file=sys.stderr, flush=True)
-    
-    # Small delay to ensure any parallel API cache operations finish
+    logger.info(
+        "exotel.voice_webhook: resume_id=%s call_sid=%s method=%s",
+        resume_id,
+        call_sid,
+        request.method,
+    )
+
+    # Small delay to ensure any parallel API cache operations finish.
     await asyncio.sleep(0.2)
-    
+
     public_url = settings.PUBLIC_URL.rstrip("/")
-    stream_url = f"{public_url.replace('https://', 'wss://').replace('http://', 'ws://')}/ws/exotel-media/voice/{resume_id}"
-    
-    response_payload = {
-        "url": stream_url
-    }
-    
-    print(f"!!! SENDING DEFINITIVE JSON RESPONSE !!!\n{response_payload}", file=sys.stderr, flush=True)
-    return JSONResponse(content=response_payload)
+    stream_url = (
+        f"{public_url.replace('https://', 'wss://').replace('http://', 'ws://')}"
+        f"/ws/exotel-media/voice/{resume_id}"
+    )
+    logger.debug("exotel.voice_webhook: stream_url=%s", stream_url)
+    return JSONResponse(content={"url": stream_url})
 
 
 

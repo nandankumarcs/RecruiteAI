@@ -23,9 +23,9 @@ from starlette.websockets import WebSocketState
 from openai import AsyncOpenAI
 from sqlalchemy import select
 
-# Providers that speak the L16 8kHz PCM wire format (vs Twilio's μ-law).
-# Twilio is the only non-L16 provider; everything else uses Exotel's framing.
-_L16_PROVIDERS = ("exotel", "browser")
+# Only the browser simulator still reaches this v1 runtime with L16 8 kHz PCM.
+# Exotel calls now go through the call-v2 runtime exclusively.
+_L16_PROVIDERS = ("browser",)
 
 from app.config import get_settings
 from app.database import async_session_factory

@@ -49,7 +49,9 @@ dummy_resume.pdf
 nginx/
 artifacts/
 test_resumes/
-docs/
+docs/*
+!docs/call-v2/
+!docs/call-v2/**
 
 # Temp markdown artifacts
 BROWSER_TEST_GUIDE.md

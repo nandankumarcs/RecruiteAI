@@ -12,7 +12,7 @@ import {
   Video,
   Volume2,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, getWebSocketBaseUrl } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Call sound effects — synthesized entirely with Web Audio API.
@@ -185,6 +185,15 @@ interface SimToken {
   call: { id: string; resume_id: string; provider_call_id: string | null; status: string };
 }
 
+interface V2TraceSummary {
+  state: string;
+  transcript: string;
+  confirmed: boolean;
+  audioSource: string;
+  userCommitted: boolean;
+  assistantCommitted: boolean;
+}
+
 const PLAYBACK_RATE = 8000;
 const JITTER_BUFFER_SECONDS = 0.06; // 60 ms
 
@@ -220,6 +229,10 @@ function int16LEToFloat32(buf: ArrayBuffer): Float32Array {
 export function SimulatorCall() {
   const { callId } = useParams<{ callId: string }>();
   const [state, setState] = useState<SimState>({ kind: "loading" });
+  const v2RealAudioMode = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("v2") === "1" || params.get("real_audio") === "1";
+  }, []);
 
   // iOS CallKit-style UI extras.
   const [muted, setMuted] = useState(false);
@@ -227,6 +240,7 @@ export function SimulatorCall() {
   const [elapsedMs, setElapsedMs] = useState(0);
   // AI speaking indicator — true while the server is sending media frames.
   const [aiSpeaking, setAiSpeaking] = useState(false);
+  const [v2TraceSummary, setV2TraceSummary] = useState<V2TraceSummary | null>(null);
   const aiSpeakTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const sounds = useCallSounds();
@@ -242,6 +256,9 @@ export function SimulatorCall() {
   const callStartTimeRef = useRef<number>(0);
   const playbackCursorRef = useRef<number>(0);
   const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const mediaChunkRef = useRef(0);
+  const v2CapturePausedRef = useRef(false);
+  const v2FlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Mirror of muted state for the AudioWorklet message handler (closes over
   // stale state otherwise). When true, the worklet's output is replaced with
   // silent frames before being sent — keeps the wire cadence at 20 ms and
@@ -321,6 +338,23 @@ export function SimulatorCall() {
     let cancelled = false;
     (async () => {
       try {
+        if (v2RealAudioMode) {
+          const wsBase = getWebSocketBaseUrl();
+          setState({
+            kind: "ringing",
+            token: {
+              token: "",
+              ws_url: `${wsBase}/ws/call-v2-sim/${callId}?real_audio=1`,
+              call: {
+                id: callId,
+                resume_id: "manual-v2",
+                provider_call_id: null,
+                status: "queued",
+              },
+            },
+          });
+          return;
+        }
         const response = await api.get<SimToken>(`/sim/token/${callId}`);
         if (!cancelled) {
           setState({ kind: "ringing", token: response.data });
@@ -337,7 +371,7 @@ export function SimulatorCall() {
     return () => {
       cancelled = true;
     };
-  }, [callId]);
+  }, [callId, v2RealAudioMode]);
 
   // ---------- Status transitions ----------
   // The realtime bridge handles status transitions itself:
@@ -375,6 +409,12 @@ export function SimulatorCall() {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
+    if (v2FlushTimerRef.current) {
+      clearTimeout(v2FlushTimerRef.current);
+      v2FlushTimerRef.current = null;
+    }
+    mediaChunkRef.current = 0;
+    v2CapturePausedRef.current = false;
     if (captureCtxRef.current) {
       try {
         void captureCtxRef.current.close();
@@ -498,13 +538,19 @@ export function SimulatorCall() {
       streamSidRef.current = streamSid;
 
       ws.onopen = () => {
-        // Exotel-protocol handshake.
+        mediaChunkRef.current = 0;
+        v2CapturePausedRef.current = false;
+        // Exotel-protocol handshake. V2 ignores `connected` and accepts the
+        // same start/media envelope so the browser capture path stays shared.
         ws.send(JSON.stringify({ event: "connected" }));
         ws.send(
           JSON.stringify({
             event: "start",
+            now_ms: 0,
+            stream_sid: streamSid,
             start: {
               call_sid: providerCallSid,
+              call_id: v2RealAudioMode ? token.call.id : undefined,
               stream_sid: streamSid,
               account_sid: "browser",
               custom_parameters: { resume_id: token.call.resume_id },
@@ -517,6 +563,30 @@ export function SimulatorCall() {
           }),
         );
         setState({ kind: "in_call", token });
+        if (v2RealAudioMode) {
+          v2FlushTimerRef.current = setTimeout(() => {
+            const liveWs = wsRef.current;
+            if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+            v2CapturePausedRef.current = true;
+            const nowMs = Date.now() - callStartTimeRef.current;
+            liveWs.send(
+              JSON.stringify({
+                event: "stt.transcribe_buffer",
+                now_ms: nowMs,
+                silence_ms: 500,
+              }),
+            );
+            setTimeout(() => {
+              if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+              liveWs.send(
+                JSON.stringify({
+                  event: "time.advance",
+                  now_ms: nowMs + 150,
+                }),
+              );
+            }, 150);
+          }, 7000);
+        }
       };
 
       ws.onmessage = (evt) => {
@@ -527,6 +597,12 @@ export function SimulatorCall() {
             if (payload) handleMediaFrame(payload);
           } else if (data?.event === "clear") {
             flushPlayback();
+          } else if (data?.event === "v2.trace") {
+            (window as any).__lastCallV2Trace = data;
+            setV2TraceSummary(summarizeV2Trace(data));
+            console.debug("Call v2 trace", data);
+          } else if (data?.event === "v2.error") {
+            console.warn("Call v2 simulator error", data);
           }
         } catch (e) {
           console.warn("Failed to parse WS message:", e);
@@ -554,14 +630,23 @@ export function SimulatorCall() {
       worklet.port.onmessage = ({ data }) => {
         const liveWs = wsRef.current;
         if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+        if (v2RealAudioMode && v2CapturePausedRef.current) return;
         const payload = mutedRef.current
           ? silentFrame
           : arrayBufferToBase64(data as ArrayBuffer);
+        const chunk = ++mediaChunkRef.current;
+        const nowMs = Math.max(0, Date.now() - callStartTimeRef.current);
         liveWs.send(
           JSON.stringify({
             event: "media",
+            now_ms: v2RealAudioMode ? nowMs : undefined,
             stream_sid: streamSid,
-            media: { payload },
+            candidate_activity: v2RealAudioMode ? !mutedRef.current : undefined,
+            media: {
+              payload,
+              timestamp: v2RealAudioMode ? nowMs : undefined,
+              chunk: v2RealAudioMode ? chunk : undefined,
+            },
           }),
         );
       };
@@ -574,7 +659,7 @@ export function SimulatorCall() {
           : err?.message || "Could not start the call.";
       setState({ kind: "error", message: msg });
     }
-  }, [state, handleMediaFrame, flushPlayback, teardown, sounds]);
+  }, [state, handleMediaFrame, flushPlayback, teardown, sounds, v2RealAudioMode]);
 
   // ---------- Decline ----------
   const onDecline = useCallback(() => {
@@ -714,6 +799,10 @@ export function SimulatorCall() {
               </div>
             </div>
 
+            {v2RealAudioMode && state.kind === "in_call" && (
+              <V2TracePanel summary={v2TraceSummary} />
+            )}
+
             {/* Bottom controls */}
             <div className="mt-auto pb-2">
               {/* Ringing: Decline (red) + Accept (green) circular buttons */}
@@ -805,6 +894,41 @@ export function SimulatorCall() {
           100% { transform: scale(1.25); opacity: 0; }
         }
       `}</style>
+    </div>
+  );
+}
+
+function summarizeV2Trace(data: any): V2TraceSummary {
+  const trace = Array.isArray(data?.trace) ? data.trace : [];
+  const finalSegments = trace.filter((item: any) => item?.event_type === "stt.final_segment");
+  const audioSources = trace.filter((item: any) => item?.event_type === "audio.source_selected");
+  const commits = trace.filter((item: any) => item?.event_type === "persistence.transcript_turn_committed");
+  return {
+    state: String(data?.state || ""),
+    transcript: String(finalSegments.at(-1)?.data?.text || ""),
+    confirmed: trace.some((item: any) => item?.event_type === "turn.confirmed"),
+    audioSource: String(audioSources.at(-1)?.data?.source || ""),
+    userCommitted: commits.some((item: any) => item?.data?.role === "user"),
+    assistantCommitted: commits.some((item: any) => item?.data?.role === "assistant"),
+  };
+}
+
+function V2TracePanel({ summary }: { summary: V2TraceSummary | null }) {
+  return (
+    <div className="mb-4 rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-left text-[10px] leading-snug text-white/65">
+      <div className="flex items-center justify-between gap-2 text-white/80">
+        <span className="font-semibold uppercase tracking-[0.18em]">V2 trace</span>
+        <span className="tabular-nums">{summary?.state || "listening"}</span>
+      </div>
+      <div className="mt-1 line-clamp-2">
+        Heard: {summary?.transcript || "waiting for buffer flush"}
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-white/45">
+        <span>confirmed:{summary?.confirmed ? "yes" : "no"}</span>
+        <span>audio:{summary?.audioSource || "-"}</span>
+        <span>user:{summary?.userCommitted ? "yes" : "no"}</span>
+        <span>assistant:{summary?.assistantCommitted ? "yes" : "no"}</span>
+      </div>
     </div>
   );
 }

@@ -5,16 +5,14 @@ file + remove its registration in ``main.py`` to fully uninstall.
 
 Endpoints:
   - GET  /api/sim/token/{call_id}         — mint a short-lived join token (auth required)
-  - WS   /ws/browser-media/{resume_id}    — Exotel-protocol websocket (token-auth via query param)
+  - WS   /ws/browser-media/{resume_id}    — call v2 runtime (token-auth via query param)
+  - WS   /ws/call-v2-sim/{call_id}        — call v2 fake-provider test harness
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, status
 from sqlalchemy import select
@@ -25,9 +23,9 @@ from app.core.dependencies import get_current_user
 from app.core.security import decode_token
 from app.database import async_session_factory, get_db
 from app.models import Call, User
-from app.services.simulator_recorder import RecordingWebSocket, SimulatorCallRecorder
+from app.call_v2.runtime import get_call_v2_runtime
+from app.call_v2.simulator import run_call_v2_simulator_websocket
 from app.services.telephony_browser import mint_simulator_token
-from app.services.voice_runtime import get_voice_runtime_service
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -118,78 +116,43 @@ async def browser_media_stream(websocket: WebSocket, resume_id: str):
             )
             return
 
-    await websocket.accept()
-    logger.info(
-        "Browser simulator websocket accepted (call=%s, resume=%s)",
-        call_uuid,
-        resume_uuid,
-    )
-
-    recorder = SimulatorCallRecorder(call_id=call_uuid)
-    recording_ws = RecordingWebSocket(websocket, recorder)
-
-    try:
-        runtime = get_voice_runtime_service()
-        await runtime.handle(recording_ws, resume_uuid, provider="browser")
-    except Exception as e:
-        logger.error("Browser simulator stream error: %s", e, exc_info=True)
-    finally:
-        # Persist the recording even on error — partial audio is still useful.
-        if not recorder.is_empty():
-            try:
-                await _persist_simulator_recording(call_uuid, recorder)
-            except Exception as e:
-                logger.error(
-                    "Failed to persist simulator recording (call=%s): %s",
-                    call_uuid,
-                    e,
-                    exc_info=True,
-                )
+    # The v2 runtime accepts, creates the session, and drives the full call loop.
+    # Call messages and trace are persisted by the v2 persistence layer.
+    runtime = get_call_v2_runtime()
+    await runtime.handle(websocket, resume_id=resume_uuid, provider="browser")
 
 
-def _write_wav_sync(full_path: Path, wav_bytes: bytes) -> None:
-    full_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(full_path, "wb") as f:
-        f.write(wav_bytes)
+@router.websocket("/ws/call-v2-sim/{call_id}")
+async def call_v2_simulator_stream(websocket: WebSocket, call_id: str):
+    """Dev/test websocket harness for call v2 fake-provider sessions.
 
-
-async def _persist_simulator_recording(
-    call_id: uuid.UUID, recorder: SimulatorCallRecorder
-) -> None:
-    """Write WAV bytes to local disk and stamp the Call row with recording_*.
-
-    Design:
-      - Storage abstraction (services/storage.py) takes an UploadFile, not bytes.
-        We write directly under STORAGE_LOCAL_PATH/recordings to avoid a fake
-        UploadFile wrapper. S3 support for simulator recordings is intentionally
-        deferred — simulator is dev-only.
-      - recording_url points at the existing auth-protected
-        /api/calls/{id}/recording endpoint so the CallDetail page renders
-        simulator recordings identically to Exotel/Twilio ones.
-      - auto_evaluate_call_if_ready only reads `transcript`, never
-        `recording_url` (call_evaluation.py:36-43), so the bridge's earlier
-        `_update_call_finished` running before this finally block is fine.
+    Accepts simulator telephony envelopes plus explicit ``stt.*`` control events
+    so tests can drive v2 session traces deterministically without real STT/TTS.
     """
-    wav_bytes = recorder.to_wav_bytes()
-    base_dir = Path(settings.STORAGE_LOCAL_PATH) / "recordings"
-    full_path = base_dir / f"{call_id}.wav"
-    relative_path = f"recordings/{call_id}.wav"
 
-    # `wave` + `open` are blocking; run in a thread so we don't stall the loop.
-    await asyncio.to_thread(_write_wav_sync, full_path, wav_bytes)
+    if not settings.CALL_V2_SIMULATOR_ENABLED:
+        await websocket.close(code=1008, reason="Call v2 simulator disabled")
+        return
+    if (
+        settings.CALL_V2_SIMULATOR_TOKEN
+        and websocket.query_params.get("token") != settings.CALL_V2_SIMULATOR_TOKEN
+    ):
+        await websocket.close(code=1008, reason="Invalid call v2 simulator token")
+        return
+    real_audio = _truthy_query_param(websocket.query_params.get("real_audio"))
+    if real_audio and not settings.CALL_V2_SIMULATOR_REAL_AUDIO_ENABLED:
+        await websocket.close(code=1008, reason="Call v2 real audio simulator disabled")
+        return
+    if real_audio and not settings.OPENAI_API_KEY:
+        await websocket.close(code=1008, reason="OPENAI_API_KEY required")
+        return
 
-    async with async_session_factory() as session:
-        call = await session.get(Call, call_id)
-        if call is None:
-            return
-        call.recording_path = relative_path
-        public = settings.PUBLIC_URL.rstrip("/")
-        call.recording_url = f"{public}/api/calls/{call_id}/recording"
-        await session.commit()
-
-    logger.info(
-        "Saved simulator recording (call=%s, path=%s, size=%d bytes)",
-        call_id,
-        full_path,
-        os.path.getsize(full_path) if full_path.exists() else 0,
+    await run_call_v2_simulator_websocket(
+        websocket,
+        call_id=call_id,
+        real_audio=real_audio,
     )
+
+
+def _truthy_query_param(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}

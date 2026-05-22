@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     OPENAI_REALTIME_MODEL: str = "gpt-4o-mini-realtime-preview"
     OPENAI_REALTIME_VOICE: str = "coral"
     OPENAI_TRANSCRIPTION_MODEL: str = "whisper-1"
+    OPENAI_TRANSCRIPTION_LANGUAGE: str = "en"
+    OPENAI_TTS_MODEL: str = "gpt-4o-mini-tts"
+    OPENAI_TTS_VOICE: str = "coral"
+    OPENAI_TTS_SPEED: float = 1.0
     OPENAI_TEXT_INPUT_COST_PER_1M: float = 0.15
     OPENAI_TEXT_OUTPUT_COST_PER_1M: float = 0.6
     OPENAI_REALTIME_TEXT_INPUT_COST_PER_1M: float = 0.6
@@ -123,6 +127,10 @@ class Settings(BaseSettings):
     BACKEND_PORT: int = 8000
     FRONTEND_URL: str = "http://localhost:5173"
     PUBLIC_URL: str = "http://localhost:8000"
+    COMPANY_NAME: str = ""  # Shown in the call opener: "Hello {name}, this is a call from {COMPANY_NAME}..."
+    CALL_V2_SIMULATOR_ENABLED: bool = True
+    CALL_V2_SIMULATOR_TOKEN: str = ""
+    CALL_V2_SIMULATOR_REAL_AUDIO_ENABLED: bool = True
 
     # --- Resume Processing Session Management ---
     RESUME_SESSION_TTL_HOURS: int = 1  # Session cleanup after inactivity (in hours)

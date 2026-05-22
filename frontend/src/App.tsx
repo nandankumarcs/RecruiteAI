@@ -18,6 +18,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/sim/v2-call/:callId" element={<SimulatorCall />} />
         
         {/* Protected Routes inside AppLayout */}
         <Route element={<ProtectedRoute />}>

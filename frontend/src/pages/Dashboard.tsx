@@ -30,6 +30,7 @@ interface DashboardMetrics {
   average_cost_per_call_usd: number | null;
   realtime_calls: number;
   pipeline_calls: number;
+  v2_calls: number;
   average_latency_ms: number | null;
 }
 
@@ -260,6 +261,10 @@ export function Dashboard() {
             <CardTitle className="text-base font-black tracking-tight">Runtime Mix</CardTitle>
           </CardHeader>
           <CardContent className="p-0 space-y-4">
+            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/40 px-4 py-3">
+              <span className="text-sm font-semibold text-muted-foreground">Call V2</span>
+              <span className="text-xl font-black">{metrics?.v2_calls ?? 0}</span>
+            </div>
             <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/40 px-4 py-3">
               <span className="text-sm font-semibold text-muted-foreground">OpenAI Realtime</span>
               <span className="text-xl font-black">{metrics?.realtime_calls ?? 0}</span>

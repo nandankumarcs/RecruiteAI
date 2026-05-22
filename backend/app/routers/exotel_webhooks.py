@@ -1,30 +1,33 @@
-"""
-Exotel webhooks router — maps Exotel's API formats into our internal structures.
-"""
+"""Exotel webhooks router — maps Exotel's API formats into our internal structures."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from fastapi import APIRouter, Depends, Form, Request
+import re
+import uuid
+
+from fastapi import APIRouter, Depends, Form, Request, WebSocket
 from fastapi.responses import Response, JSONResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.call_v2.runtime import get_call_v2_runtime
 from app.config import get_settings
 from app.database import async_session_factory, get_db
 from app.models.call import Call
 from app.services.telephony import get_telephony_service
-
-# For now we use the same signature pattern if needed, or disable it
-# from app.dependencies.exotel_signature import verify_exotel_signature
+from app.services.telephony_cache import get_cached_resume_id
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 settings = get_settings()
 
 router = APIRouter(tags=["exotel-webhooks"])
+
+_UUID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I
+)
 
 # Map Exotel status to our internal normalized statuses
 EXOTEL_STATUS_MAP = {
@@ -164,57 +167,48 @@ async def exotel_recording_webhook(
     await db.commit()
     return Response(status_code=204)
 
-# Note: WebSocket endpoint for Media is mounted in `main.py` usually 
-# or handled via `twilio_webhooks.py` currently if the path matches.
-# But we'll add the new Exotel websocket path explicitly.
-
-from fastapi import WebSocket
-from app.services.voice_runtime import get_voice_runtime_service
-from app.services.telephony_cache import get_cached_resume_id
-import uuid
 
 @router.websocket("/ws/exotel-media/{resume_id:path}")
 @router.websocket("/webhooks/exotel-stream/{resume_id:path}")
 async def exotel_media_stream(websocket: WebSocket, resume_id: str):
-    """WebSocket endpoint for Exotel's AgentStream protocol."""
-    # MANDATORY: Accept immediately to prevent 403 Forbidden on handshake
-    await websocket.accept()
-    
-    # Log the full URL and params for debugging
-    import sys
-    sys.stderr.write(f"WebSocket URL: {websocket.url}\n")
-    sys.stderr.write(f"WebSocket Query Params: {websocket.query_params}\n")
-    sys.stderr.flush()
+    """WebSocket entry point for Exotel's AgentStream (call v2 runtime).
 
-    # 1. Try to find a UUID in the mangled resume_id string using regex
-    import re
-    uuid_pattern = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
-    
-    # Search in the path first
-    match = uuid_pattern.search(resume_id)
+    Exotel requires the WebSocket handshake to complete immediately or it sends
+    a 403, so we accept before starting the (async) session setup inside the
+    v2 runtime.  The v2 runtime's handle() re-checks the application state and
+    will not call accept() a second time.
+
+    resume_id resolution order:
+    1. UUID found directly in the path (normal case).
+    2. UUID in query params (CustomField, resume_id, call_resume_id).
+    3. In-process memory cache (survives within the same server process).
+    4. Most-recent Exotel call row in the DB (last-resort dev fallback when the
+       server restarted and cleared the in-process cache before Exotel connected).
+    """
+    await websocket.accept()
+
+    logger.debug("Exotel media stream: url=%s params=%s", websocket.url, dict(websocket.query_params))
+
+    match = _UUID_PATTERN.search(resume_id)
     if match:
         resume_id = match.group(0)
     else:
-        # 2. Search in query params
         new_id = (
-            websocket.query_params.get("CustomField") 
+            websocket.query_params.get("CustomField")
             or websocket.query_params.get("resume_id")
             or websocket.query_params.get("call_resume_id")
         )
         if new_id:
-            match = uuid_pattern.search(new_id)
+            match = _UUID_PATTERN.search(new_id)
             if match:
                 resume_id = match.group(0)
-        
-        # 3. Fallback to cache if still no luck
-        if not uuid_pattern.match(resume_id):
+
+        if not _UUID_PATTERN.match(resume_id):
             cached_id = get_cached_resume_id()
             if cached_id:
                 resume_id = cached_id
 
-        # 4. Last-resort dev fallback for Exotel flow URLs that arrive without
-        # our UUID in the WebSocket path after a server reload clears memory cache.
-        if not uuid_pattern.match(resume_id):
+        if not _UUID_PATTERN.match(resume_id):
             async with async_session_factory() as session:
                 result = await session.execute(
                     select(Call.resume_id)
@@ -226,25 +220,14 @@ async def exotel_media_stream(websocket: WebSocket, resume_id: str):
                 if latest_resume_id:
                     resume_id = str(latest_resume_id)
 
-    sys.stderr.write(f"DEBUG: Final Resolved resume_id: {resume_id}\n")
-    sys.stderr.flush()
-    
+    logger.debug("Exotel media stream: resolved resume_id=%s", resume_id)
+
     try:
         resume_uuid = uuid.UUID(resume_id)
     except ValueError:
-        logger.error(f"FATAL: Could not resolve a valid UUID from: {resume_id}")
+        logger.error("Could not resolve a valid UUID from Exotel path: %r", resume_id)
         await websocket.close(code=1003, reason="Invalid session ID")
         return
 
-    try:
-        runtime = get_voice_runtime_service()
-        # runtime.handle will NO LONGER call websocket.accept() if it checks state
-        await runtime.handle(websocket, resume_uuid, provider="exotel")
-    except Exception as e:
-        logger.error(f"Error in Exotel media stream: {e}", exc_info=True)
-        # Check if already accepted before closing
-        try:
-            if not websocket.client_state.name == "DISCONNECTED":
-                await websocket.close()
-        except:
-            pass
+    runtime = get_call_v2_runtime()
+    await runtime.handle(websocket, resume_id=resume_uuid, provider="exotel")
