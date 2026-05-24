@@ -145,8 +145,14 @@ def test_agent_config_carries_questions_context_and_non_deterministic_policy():
 
     assert config.config_version == "call-agent.v2.exotel"
     assert config.context["questions"][0]["text"] == "Tell me about a backend system you owned."
+    assert set(config.context["candidate"]) == {"name", "email", "phone_number"}
     assert "Ask for consent" in config.instructions
     assert "deterministic script" in config.instructions
+    assert any("Ask for consent once" in c for c in config.constraints)
+    assert any("clearly declines consent" in c for c in config.constraints)
+    assert any("called back" in c for c in config.constraints)
+    assert any("move on to the next question" in c for c in config.constraints)
+    assert any("At most one follow-up" in c for c in config.constraints)
 
 
 def test_deepgram_keyterms_are_unique_and_contextual():
