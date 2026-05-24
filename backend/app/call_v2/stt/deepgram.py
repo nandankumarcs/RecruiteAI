@@ -332,7 +332,18 @@ class DeepgramStreamingSttEngine:
             ("smart_format", "true"),
         ]
         if self.model.startswith("nova-3"):
-            query.extend(("keyterm", term) for term in self.keyterms[:50] if term.strip())
+            # nova-3: Keyterm Prompting (up to 100 terms, instant accuracy boost
+            # for product/company names, jargon, multi-word phrases).
+            query.extend(("keyterm", term) for term in self.keyterms[:100] if term.strip())
+        else:
+            # nova-2 and older: legacy keyword boosting with an intensifier.
+            # `:2` is a moderate boost — strong enough to catch domain terms
+            # without over-biasing the model towards them on neutral audio.
+            query.extend(
+                ("keywords", f"{term}:2")
+                for term in self.keyterms[:50]
+                if term.strip()
+            )
         return f"{self.url}?{urlencode(query)}"
 
     async def _keepalive_loop(self) -> None:

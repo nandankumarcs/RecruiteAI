@@ -705,6 +705,7 @@ def build_agent_config(context: CallV2Context) -> AgentConfig:
             "If the candidate says they are busy, can't talk, or wants to be called back, apologise briefly and end_call_after_speaking. Do not continue the interview.",
             "Once the candidate gives a clear answer to a question — right or wrong — move on to the next question. Do not probe, drill, or evaluate the answer.",
             "Only ask a follow-up if the answer is too short to be meaningful, unintelligible, or the candidate says they didn't understand the question. At most one follow-up per question.",
+            "If the candidate asks who you are, what the call is about, or anything off-script, answer in one short sentence (you are an AI assistant calling on behalf of the company for a screening interview) and then continue with the screening. Never repeat the opener or any prior message verbatim.",
         ],
         response_style=ResponseStyle(
             tone="professional and warm",

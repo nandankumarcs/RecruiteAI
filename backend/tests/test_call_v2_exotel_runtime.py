@@ -128,7 +128,7 @@ def test_deepgram_streaming_url_matches_exotel_audio_contract():
     assert "keyterm=FastAPI" in url
 
 
-def test_deepgram_streaming_url_omits_keyterms_for_non_nova3_models():
+def test_deepgram_streaming_url_uses_keywords_for_non_nova3_models():
     engine = DeepgramStreamingSttEngine(
         api_key="test-key",
         input_format=LINEAR16_8K_MONO,
@@ -137,7 +137,10 @@ def test_deepgram_streaming_url_omits_keyterms_for_non_nova3_models():
         keyterms=["FastAPI"],
     )
 
-    assert "keyterm=" not in engine._listen_url()
+    url = engine._listen_url()
+    # nova-2 uses the legacy `keywords` parameter with an intensifier, not `keyterm`.
+    assert "keyterm=" not in url
+    assert "keywords=FastAPI%3A2" in url  # URL-encoded "FastAPI:2"
 
 
 def test_agent_config_carries_questions_context_and_non_deterministic_policy():
@@ -153,6 +156,7 @@ def test_agent_config_carries_questions_context_and_non_deterministic_policy():
     assert any("called back" in c for c in config.constraints)
     assert any("move on to the next question" in c for c in config.constraints)
     assert any("At most one follow-up" in c for c in config.constraints)
+    assert any("Never repeat the opener" in c for c in config.constraints)
 
 
 def test_deepgram_keyterms_are_unique_and_contextual():
