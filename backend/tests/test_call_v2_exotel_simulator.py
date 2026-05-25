@@ -9,6 +9,7 @@ See: docs/call-v2/07-testing-and-simulator-plan.md §Gate 8
 
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import pytest
@@ -453,6 +454,13 @@ async def test_exotel_new_stt_final_after_tentative_replaces_and_confirms():
     # First tentative endpoint A
     await session.handle_stt_event(_consent_final(received_at_ms=100), now_ms=100)
     await session.handle_stt_event(_consent_endpoint(received_at_ms=600), now_ms=600)
+    # Yield so the gen=1 speculative agent task completes and consumes the
+    # "Stale result" output. Without this, the cancellation triggered by the
+    # next final segment would cancel the task before it ran, and the second
+    # task would consume "Stale result" itself — defeating the invariant this
+    # test was written to check: that a *completed* stale speculative output
+    # must not be spoken.
+    await asyncio.sleep(0)
 
     # Candidate continues — new final segment with changed text cancels via STT
     await session.handle_stt_event(

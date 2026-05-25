@@ -86,10 +86,24 @@ class CallV2RuntimeFactory:
         agent_config = build_agent_config(context)
         opener_text = _render_opener_template(agent_config.opener_template, context)
 
+        # Browser simulator sends wideband audio, not 8kHz telephone audio.
+        # Using the phonecall model on wideband returns garbage transcripts
+        # with confidence=0, which is indistinguishable from echo. Pick a
+        # wideband-tuned model when provider=browser.
+        stt_model = (
+            settings.DEEPGRAM_STT_MODEL_BROWSER
+            if provider == "browser"
+            else settings.DEEPGRAM_STT_MODEL
+        )
+        logger.info(
+            "stt.provider=deepgram model=%s provider=%s",
+            stt_model,
+            provider,
+        )
         stt_engine = DeepgramStreamingSttEngine(
             api_key=settings.DEEPGRAM_API_KEY,
             input_format=LINEAR16_8K_MONO,
-            model=settings.DEEPGRAM_STT_MODEL,
+            model=stt_model,
             language=settings.DEEPGRAM_STT_LANGUAGE,
             endpointing_ms=max(200, settings.PIPELINE_STT_ENDPOINTING_MS),
             utterance_end_ms=max(500, settings.PIPELINE_STT_UTTERANCE_END_MS),
@@ -112,6 +126,9 @@ class CallV2RuntimeFactory:
                 ),
                 raw_audio_cancels_tentative_turns=False,
                 opener_text=opener_text or None,
+                silence_nudge_ms=settings.PIPELINE_SILENCE_NUDGE_MS,
+                silence_nudge_escalate_ms=settings.PIPELINE_SILENCE_NUDGE_ESCALATE_MS,
+                silence_endcall_ms=settings.PIPELINE_SILENCE_ENDCALL_MS,
             ),
             telephony_adapter=_adapter_for_provider(provider),
             stt_engine=stt_engine,
@@ -705,7 +722,9 @@ def build_agent_config(context: CallV2Context) -> AgentConfig:
             "If the candidate says they are busy, can't talk, or wants to be called back, apologise briefly and end_call_after_speaking. Do not continue the interview.",
             "Once the candidate gives a clear answer to a question — right or wrong — move on to the next question. Do not probe, drill, or evaluate the answer.",
             "Only ask a follow-up if the answer is too short to be meaningful, unintelligible, or the candidate says they didn't understand the question. At most one follow-up per question.",
-            "If the candidate asks who you are, what the call is about, or anything off-script, answer in one short sentence (you are an AI assistant calling on behalf of the company for a screening interview) and then continue with the screening. Never repeat the opener or any prior message verbatim.",
+            "If the candidate asks who you are or what the call is about, answer in one short sentence: you are an AI assistant calling on behalf of the company for a screening interview. Then continue with the screening.",
+            "Never repeat the opener.",
+            "If your previous turn ended with a question, do not ask that same question again. Phrase the next response differently or move forward.",
         ],
         response_style=ResponseStyle(
             tone="professional and warm",

@@ -1,5 +1,7 @@
 """Phase 8 tests for call v2 session integration with fake providers."""
 
+import asyncio
+
 import pytest
 
 from app.call_v2.agent.config import (
@@ -306,6 +308,15 @@ async def test_session_uses_new_generation_after_stale_speculative_result():
 
     await session.handle_stt_event(_final("I built APIs", generation_suffix="a"), now_ms=100)
     await session.handle_stt_event(_endpoint("I built APIs"), now_ms=600)
+    # Speculative agent runs now launch as background tasks (see
+    # _launch_speculative_agent_run). Yield so the gen=1 task completes and
+    # consumes "Stale response." before we cancel it — this exercises the
+    # exact invariant the test cares about: a *completed* stale speculative
+    # result must not be used for a later confirmed turn. Without this yield,
+    # the cancellation would race ahead of the task and leave the "Stale"
+    # output in the FakeAgentRunner queue, which is a different (and also
+    # valid) code path.
+    await asyncio.sleep(0)
     await session.handle_telephony_event(_audio_after_endpoint(), now_ms=700)
     await session.handle_stt_event(
         _final(
@@ -435,3 +446,438 @@ async def test_session_unrecoverable_stt_error_ends_call():
     assert result.end_call is True
     assert session.stt_engine.closed is True
     assert session.state_machine.state == CallRuntimeState.ENDED
+
+
+@pytest.mark.asyncio
+async def test_speculative_agent_run_is_dispatched_as_background_task():
+    """Speculative runs must be fire-and-forget so the caller's state_lock can
+    be released while the LLM call is in flight. handle_stt_event must return
+    BEFORE the agent run completes (which is what allows the runtime to
+    forward audio frames concurrently)."""
+
+    class _SlowAgentRunner:
+        def __init__(self):
+            self.gate = asyncio.Event()
+            self.calls: list = []
+
+        async def run(self, agent_input):
+            self.calls.append(agent_input)
+            await self.gate.wait()
+            from app.call_v2.agent.output import validate_agent_output
+            return validate_agent_output(
+                {
+                    "spoken_text": "ok",
+                    "action": "continue",
+                    "tool_calls": [],
+                    "state_updates": {},
+                },
+                available_tools=[],
+                speculative=True,
+            )
+
+    persistence = FakeCallPersistence()
+    slow_runner = _SlowAgentRunner()
+    session = CallSession(
+        config=CallSessionConfig(
+            agent_config=_agent_config(),
+            call_id="call-bg",
+            initial_call_state=AgentVisibleCallState(
+                phase="screening", consent_status="granted", open_items=[]
+            ),
+            cache_policy_selector=lambda _o: CachePolicy(category="clarification_response"),
+        ),
+        telephony_adapter=BrowserSimulatorTelephonyAdapter(),
+        stt_engine=FakeSttEngine(provider="fake", input_format=LINEAR16_8K_MONO),
+        agent_runner=slow_runner,
+        audio_resolver=AudioSourceResolver(
+            cache=InMemoryAudioCache(),
+            primary_tts=FakeTtsEngine(payload=b"\x00\x01" * 160),
+        ),
+        persistence=persistence,
+        endpointing_settings=EndpointingSettings(confirmation_window_ms=100),
+    )
+    await _start_stream(session)
+
+    await session.handle_stt_event(_final("hello"), now_ms=100)
+    # If handle_stt_event awaited the agent inline, this call would hang
+    # forever on slow_runner.gate. It must return promptly.
+    await asyncio.wait_for(
+        session.handle_stt_event(_endpoint("hello"), now_ms=600),
+        timeout=1.0,
+    )
+
+    pending = session._pending_agent_tasks.get(1)
+    assert pending is not None
+    assert not pending.done()
+
+    # Release the gate so the task doesn't leak across tests.
+    slow_runner.gate.set()
+    await asyncio.wait_for(pending, timeout=1.0)
+    assert session._agent_runs[1].output.spoken_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_mark_agent_stale_cancels_in_flight_speculative_task():
+    """When a tentative is cancelled mid-run, the speculative task must be
+    cancelled so we don't waste the LLM call and don't leave a stored run."""
+
+    class _GatedRunner:
+        def __init__(self):
+            self.gate = asyncio.Event()
+            self.cancelled = False
+
+        async def run(self, agent_input):
+            try:
+                await self.gate.wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            from app.call_v2.agent.output import validate_agent_output
+            return validate_agent_output(
+                {"spoken_text": "x", "action": "continue", "tool_calls": [], "state_updates": {}},
+                available_tools=[],
+                speculative=True,
+            )
+
+    runner = _GatedRunner()
+    session = CallSession(
+        config=CallSessionConfig(
+            agent_config=_agent_config(),
+            call_id="call-cancel",
+            initial_call_state=AgentVisibleCallState(
+                phase="screening", consent_status="granted", open_items=[]
+            ),
+            cache_policy_selector=lambda _o: CachePolicy(category="clarification_response"),
+        ),
+        telephony_adapter=BrowserSimulatorTelephonyAdapter(),
+        stt_engine=FakeSttEngine(provider="fake", input_format=LINEAR16_8K_MONO),
+        agent_runner=runner,
+        audio_resolver=AudioSourceResolver(
+            cache=InMemoryAudioCache(),
+            primary_tts=FakeTtsEngine(payload=b"\x00\x01" * 160),
+        ),
+        persistence=FakeCallPersistence(),
+        endpointing_settings=EndpointingSettings(confirmation_window_ms=100),
+    )
+    await _start_stream(session)
+
+    await session.handle_stt_event(_final("hello"), now_ms=100)
+    await session.handle_stt_event(_endpoint("hello"), now_ms=600)
+    pending = session._pending_agent_tasks.get(1)
+    assert pending is not None and not pending.done()
+
+    # Yield so the task actually enters runner.run() and reaches the
+    # await self.gate.wait() suspension point. Without this, the cancel
+    # below would terminate the task before it ever ran, so the runner's
+    # CancelledError handler wouldn't execute.
+    await asyncio.sleep(0)
+
+    await session.handle_telephony_event(_audio_after_endpoint(), now_ms=700)
+    try:
+        await asyncio.wait_for(pending, timeout=1.0)
+    except asyncio.CancelledError:
+        pass
+
+    assert pending.cancelled() or pending.done()
+    assert runner.cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_session_end_cancels_pending_speculative_tasks():
+    """end() must cancel any in-flight speculative tasks so they don't race
+    on session state after the call has ended."""
+
+    class _GatedRunner:
+        def __init__(self):
+            self.gate = asyncio.Event()
+
+        async def run(self, agent_input):
+            await self.gate.wait()
+            from app.call_v2.agent.output import validate_agent_output
+            return validate_agent_output(
+                {"spoken_text": "x", "action": "continue", "tool_calls": [], "state_updates": {}},
+                available_tools=[],
+                speculative=True,
+            )
+
+    runner = _GatedRunner()
+    session = CallSession(
+        config=CallSessionConfig(
+            agent_config=_agent_config(),
+            call_id="call-end",
+            initial_call_state=AgentVisibleCallState(
+                phase="screening", consent_status="granted", open_items=[]
+            ),
+            cache_policy_selector=lambda _o: CachePolicy(category="clarification_response"),
+        ),
+        telephony_adapter=BrowserSimulatorTelephonyAdapter(),
+        stt_engine=FakeSttEngine(provider="fake", input_format=LINEAR16_8K_MONO),
+        agent_runner=runner,
+        audio_resolver=AudioSourceResolver(
+            cache=InMemoryAudioCache(),
+            primary_tts=FakeTtsEngine(payload=b"\x00\x01" * 160),
+        ),
+        persistence=FakeCallPersistence(),
+        endpointing_settings=EndpointingSettings(confirmation_window_ms=100),
+    )
+    await _start_stream(session)
+
+    await session.handle_stt_event(_final("hello"), now_ms=100)
+    await session.handle_stt_event(_endpoint("hello"), now_ms=600)
+    pending = session._pending_agent_tasks.get(1)
+    assert pending is not None and not pending.done()
+
+    await session.end(reason="test", now_ms=700)
+    try:
+        await asyncio.wait_for(pending, timeout=1.0)
+    except asyncio.CancelledError:
+        pass
+    assert pending.cancelled() or pending.done()
+
+
+# ---------------------------------------------------------------------------
+# Silence escalation: 5s nudge / 12s stronger nudge / 20s end-call
+# ---------------------------------------------------------------------------
+
+def _silence_session():
+    """Session with the agent runner emptied (silence path never invokes it)."""
+    return _session(agent_outputs=[])
+
+
+async def _drive_into_post_tts_guard(session: CallSession, now_ms: int = 0) -> None:
+    """Put the session into POST_TTS_GUARD with a silence window open at now_ms.
+
+    Simulates: AI just finished speaking the opener. We hand-roll the state
+    rather than running a full turn so the test doesn't depend on agent /
+    TTS / endpointing details.
+    """
+    await _start_stream(session)
+    session.identity = session.identity  # ensure set
+    session._transition(CallRuntimeState.SPEAKING, "test_setup_speaking")
+    await session.complete_tts(now_ms=now_ms)
+    assert session.state_machine.state == CallRuntimeState.POST_TTS_GUARD
+    assert session._silence_started_at_ms == now_ms
+
+
+@pytest.mark.asyncio
+async def test_silence_nudge_fires_at_5s_threshold():
+    session, _persistence, tts = _silence_session()
+    await _drive_into_post_tts_guard(session, now_ms=0)
+
+    # 4.9s after listening starts — no nudge yet.
+    result = await session.advance_time(4900)
+    assert result.outbound_audio_frames == []
+    assert session._nudge_stage == 0
+
+    # 5.0s — stage 1 nudge fires.
+    result = await session.advance_time(5000)
+    assert len(result.outbound_audio_frames) > 0
+    assert session._nudge_stage == 1
+    # Nudge was synthesised, so TTS got called once.
+    assert len(tts.requests) == 1
+    # The nudge text matches the stage 1 phrase.
+    assert "Are you still there" in tts.requests[0].text
+
+
+@pytest.mark.asyncio
+async def test_silence_escalates_to_stage_2_at_12s():
+    """Stage 2 fires at 12s elapsed FROM THE ORIGINAL SILENCE ORIGIN,
+    not from when stage 1 ended. The candidate's total silence budget is
+    20s — the nudges don't extend it."""
+    session, _persistence, tts = _silence_session()
+    await _drive_into_post_tts_guard(session, now_ms=0)
+
+    # Fire stage 1 nudge first (at 5s elapsed).
+    await session.advance_time(5000)
+    # Simulate the nudge TTS completing at 6.5s. Because _nudge_stage > 0,
+    # complete_tts must NOT re-arm the silence window — the origin stays
+    # anchored at 0 so the 12s threshold is measured from the original
+    # silence, not from after the nudge.
+    await session.complete_tts(now_ms=6500)
+    assert session._silence_started_at_ms == 0   # origin preserved
+    assert session._nudge_stage == 1
+
+    # 11.9s elapsed from origin — no escalation yet.
+    result = await session.advance_time(11900)
+    assert result.outbound_audio_frames == []
+    assert session._nudge_stage == 1
+
+    # 12s elapsed from origin — stage 2 fires.
+    result = await session.advance_time(12000)
+    assert len(result.outbound_audio_frames) > 0
+    assert session._nudge_stage == 2
+    assert (
+        "can't hear" in tts.requests[-1].text.lower()
+        or "are you able" in tts.requests[-1].text.lower()
+    )
+
+
+@pytest.mark.asyncio
+async def test_silence_ends_call_at_20s():
+    session, _persistence, tts = _silence_session()
+    await _drive_into_post_tts_guard(session, now_ms=0)
+
+    # 20s of total silence — end-call fires.
+    result = await session.advance_time(20000)
+    assert len(result.outbound_audio_frames) > 0
+    # The end-call phrase is multi-sentence, so any TTS request from this
+    # turn carrying the disconnect language counts.
+    all_text = " ".join(r.text.lower() for r in tts.requests)
+    assert "disconnected" in all_text
+    assert session._end_after_speaking is True
+    assert session._end_after_speaking_reason == "silence_timeout"
+
+
+@pytest.mark.asyncio
+async def test_silence_timer_resets_on_candidate_speech():
+    """A real candidate speech event (final segment with text and
+    confidence > 0) cancels the in-progress silence window."""
+    session, _persistence, _tts = _silence_session()
+    await _drive_into_post_tts_guard(session, now_ms=0)
+
+    # 4s of silence — about to nudge.
+    result = await session.advance_time(4000)
+    assert result.outbound_audio_frames == []
+
+    # Candidate speaks with confidence > 0. Silence window must cancel —
+    # no nudge should fire at the original 5s mark.
+    from app.call_v2.events import SttFinalSegment, TimestampMetadata
+    await session.handle_stt_event(
+        SttFinalSegment(
+            type="stt.final_segment",
+            text="Hello",
+            confidence=0.9,
+            segment_id=None,
+            timestamps=TimestampMetadata(backend_received_at_ms=4500),
+            duration_ms=400,
+        ),
+        now_ms=4500,
+    )
+    assert session._silence_started_at_ms is None
+    assert session._nudge_stage == 0
+
+    result = await session.advance_time(5500)
+    assert result.outbound_audio_frames == []
+    assert session._nudge_stage == 0
+
+
+@pytest.mark.asyncio
+async def test_silence_nudge_disabled_when_threshold_is_zero():
+    """Setting silence_nudge_ms=0 turns the feature off entirely."""
+    persistence = FakeCallPersistence()
+    tts = FakeTtsEngine(payload=b"\x00\x01" * 160)
+    session = CallSession(
+        config=CallSessionConfig(
+            agent_config=_agent_config(),
+            call_id="call-no-nudge",
+            initial_call_state=AgentVisibleCallState(
+                phase="screening", consent_status="granted", open_items=[]
+            ),
+            cache_policy_selector=lambda _o: CachePolicy(category="clarification_response"),
+            silence_nudge_ms=0,
+            silence_nudge_escalate_ms=0,
+            silence_endcall_ms=0,
+        ),
+        telephony_adapter=BrowserSimulatorTelephonyAdapter(),
+        stt_engine=FakeSttEngine(provider="fake", input_format=LINEAR16_8K_MONO),
+        agent_runner=FakeAgentRunner(outputs=[]),
+        audio_resolver=AudioSourceResolver(
+            cache=InMemoryAudioCache(),
+            primary_tts=tts,
+        ),
+        persistence=persistence,
+        endpointing_settings=EndpointingSettings(confirmation_window_ms=100),
+    )
+    await _drive_into_post_tts_guard(session, now_ms=0)
+
+    # Even at 60s of silence, nothing should fire.
+    result = await session.advance_time(60_000)
+    assert result.outbound_audio_frames == []
+    assert tts.requests == []
+
+
+@pytest.mark.asyncio
+async def test_silence_timer_ignores_tts_echo_events():
+    """Echo from the AI's own TTS bleeding into the candidate mic surfaces
+    as SttSpeechStarted (VAD only) and as Interim/Final transcripts with
+    confidence=0. These must NOT reset the silence timer — otherwise a
+    silent candidate's mic loopback prevents the nudge from ever firing
+    (the bug we observed in call 30ed2cd6)."""
+    session, _persistence, tts = _silence_session()
+    await _drive_into_post_tts_guard(session, now_ms=0)
+
+    from app.call_v2.events import (
+        SttFinalSegment,
+        SttInterimTranscript,
+        SttSpeechStarted,
+        TimestampMetadata,
+    )
+
+    # Simulate a sequence of echo / VAD-only events spread across the
+    # silence window. None of them should reset the silence timer.
+    await session.handle_stt_event(
+        SttSpeechStarted(
+            type="stt.speech_started",
+            timestamps=TimestampMetadata(backend_received_at_ms=1000),
+        ),
+        now_ms=1000,
+    )
+    await session.handle_stt_event(
+        SttInterimTranscript(
+            type="stt.interim_transcript",
+            text="AI",  # echo of the opener's "junior AI engineer position"
+            confidence=0.0,
+            timestamps=TimestampMetadata(backend_received_at_ms=2000),
+            duration_ms=1000,
+        ),
+        now_ms=2000,
+    )
+    await session.handle_stt_event(
+        SttFinalSegment(
+            type="stt.final_segment",
+            text="AI",
+            confidence=0.0,
+            segment_id=None,
+            timestamps=TimestampMetadata(backend_received_at_ms=3500),
+            duration_ms=1200,
+        ),
+        now_ms=3500,
+    )
+    # Silence origin must still be 0 — none of the echo events reset it.
+    assert session._silence_started_at_ms == 0
+
+    # At 5s elapsed, the nudge fires normally.
+    result = await session.advance_time(5000)
+    assert len(result.outbound_audio_frames) > 0
+    assert session._nudge_stage == 1
+    assert "Are you still there" in tts.requests[-1].text
+
+
+@pytest.mark.asyncio
+async def test_silence_full_escalation_ladder_within_20s_budget():
+    """End-to-end ladder: stage 1 at 5s, stage 2 at 12s, end-call at 20s,
+    all measured from the original silence origin. The intermediate nudge
+    TTS completing does NOT reset the origin."""
+    session, _persistence, tts = _silence_session()
+    await _drive_into_post_tts_guard(session, now_ms=0)
+
+    # Stage 1 at 5s.
+    result = await session.advance_time(5000)
+    assert len(result.outbound_audio_frames) > 0
+    assert session._nudge_stage == 1
+    # Stage 1 nudge audio plays for ~1.5s — simulate completion.
+    await session.complete_tts(now_ms=6500)
+    assert session._silence_started_at_ms == 0  # origin preserved
+
+    # Stage 2 at 12s.
+    result = await session.advance_time(12000)
+    assert len(result.outbound_audio_frames) > 0
+    assert session._nudge_stage == 2
+    await session.complete_tts(now_ms=13500)
+    assert session._silence_started_at_ms == 0  # origin preserved
+
+    # End-call at 20s.
+    result = await session.advance_time(20000)
+    assert len(result.outbound_audio_frames) > 0
+    assert session._end_after_speaking is True
+    assert session._end_after_speaking_reason == "silence_timeout"

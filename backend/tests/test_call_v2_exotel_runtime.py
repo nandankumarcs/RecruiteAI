@@ -157,6 +157,7 @@ def test_agent_config_carries_questions_context_and_non_deterministic_policy():
     assert any("move on to the next question" in c for c in config.constraints)
     assert any("At most one follow-up" in c for c in config.constraints)
     assert any("Never repeat the opener" in c for c in config.constraints)
+    assert any("do not ask that same question again" in c for c in config.constraints)
 
 
 def test_deepgram_keyterms_are_unique_and_contextual():
@@ -181,10 +182,14 @@ async def test_exotel_runtime_disables_raw_audio_tentative_cancellation(monkeypa
         OPENAI_API_KEY = "openai-key"
         DEEPGRAM_API_KEY = "deepgram-key"
         DEEPGRAM_STT_MODEL = "nova-2-phonecall"
+        DEEPGRAM_STT_MODEL_BROWSER = "nova-3"
         DEEPGRAM_STT_LANGUAGE = "en-IN"
         PIPELINE_STT_ENDPOINTING_MS = 500
         PIPELINE_STT_UTTERANCE_END_MS = 1000
         PIPELINE_SPECULATIVE_CONFIRMATION_MS = 800
+        PIPELINE_SILENCE_NUDGE_MS = 5000
+        PIPELINE_SILENCE_NUDGE_ESCALATE_MS = 12000
+        PIPELINE_SILENCE_ENDCALL_MS = 20000
         OPENAI_TTS_MODEL = "tts-model"
         OPENAI_TTS_VOICE = "voice"
         OPENAI_TTS_SPEED = 1.0
@@ -262,10 +267,14 @@ async def test_browser_runtime_uses_browser_simulator_adapter(monkeypatch):
         OPENAI_API_KEY = "openai-key"
         DEEPGRAM_API_KEY = "deepgram-key"
         DEEPGRAM_STT_MODEL = "nova-2-phonecall"
+        DEEPGRAM_STT_MODEL_BROWSER = "nova-3"
         DEEPGRAM_STT_LANGUAGE = "en-IN"
         PIPELINE_STT_ENDPOINTING_MS = 500
         PIPELINE_STT_UTTERANCE_END_MS = 1000
         PIPELINE_SPECULATIVE_CONFIRMATION_MS = 800
+        PIPELINE_SILENCE_NUDGE_MS = 5000
+        PIPELINE_SILENCE_NUDGE_ESCALATE_MS = 12000
+        PIPELINE_SILENCE_ENDCALL_MS = 20000
         OPENAI_TTS_MODEL = "tts-model"
         OPENAI_TTS_VOICE = "voice"
         OPENAI_TTS_SPEED = 1.0

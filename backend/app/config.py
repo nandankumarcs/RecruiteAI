@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     # --- Deepgram ---
     DEEPGRAM_API_KEY: str = ""
     DEEPGRAM_STT_MODEL: str = "nova-3"
+    # Browser-sim audio is wideband (16 kHz+), not 8 kHz telephone narrowband.
+    # nova-2-phonecall (the typical production model) returns garbage transcripts
+    # with confidence=0 on wideband input — indistinguishable from echo, which
+    # breaks the silence-nudge feature in the simulator. Use a wideband-tuned
+    # model only when provider=browser. Production phone calls (exotel/twilio)
+    # continue to use DEEPGRAM_STT_MODEL.
+    DEEPGRAM_STT_MODEL_BROWSER: str = "nova-3"
     DEEPGRAM_STT_LANGUAGE: str = "en-IN"   # Indian English accent model
     DEEPGRAM_TTS_MODEL: str = "aura-asteria-en"
     DEEPGRAM_STT_COST_PER_MINUTE_USD: float = 0.0043
@@ -84,6 +91,14 @@ class Settings(BaseSettings):
     # Net silence before AI responds = PIPELINE_STT_ENDPOINTING_MS + PIPELINE_SPECULATIVE_CONFIRMATION_MS.
     # Set to 0 to disable speculative mode (commit immediately at endpointing).
     PIPELINE_SPECULATIVE_CONFIRMATION_MS: int = 1000
+    # Silence-nudge escalation: when the candidate is silent after the AI
+    # finishes speaking, fire a gentle nudge at NUDGE_MS, a stronger nudge at
+    # ESCALATE_MS, and end the call at ENDCALL_MS. Set NUDGE_MS to 0 to
+    # disable the feature entirely. Timer resets the moment the candidate
+    # starts speaking (Deepgram SttSpeechStarted or any interim/final/endpoint).
+    PIPELINE_SILENCE_NUDGE_MS: int = 5000
+    PIPELINE_SILENCE_NUDGE_ESCALATE_MS: int = 12000
+    PIPELINE_SILENCE_ENDCALL_MS: int = 20000
     # Word-count based progression: after candidate speaks >= this many words
     # since the current question was asked, force-advance regardless of answer
     # quality. Prevents LLM from looping on semantically "weak" answers from

@@ -69,6 +69,12 @@ class CallSessionConfig:
     # Pre-rendered opener text. When set, start_runtime_opener() speaks this
     # directly without running the LLM. Rendered from AgentConfig.opener_template
     # by the runtime factory. None means the agent generates the opener.
+    # Silence escalation thresholds (ms) — see app.config.Settings for the
+    # corresponding env vars. silence_nudge_ms <= 0 disables the feature
+    # (useful in unit tests that don't want time-based behaviour interfering).
+    silence_nudge_ms: int = 5000
+    silence_nudge_escalate_ms: int = 12000
+    silence_endcall_ms: int = 20000
 
 
 @dataclass(slots=True)
@@ -88,6 +94,18 @@ class _StoredAgentRun:
     input_fingerprint: str
     output: AgentOutput
     stale: bool = False
+
+
+# Pre-canned silence-nudge phrases. Generic on purpose so their TTS can be
+# cached across calls (no candidate-specific placeholders). The end-call
+# phrase doubles as the spoken closer when we hit the hard timeout.
+_SILENCE_NUDGE_PHRASES: dict[int, str] = {
+    1: "Are you still there?",
+    2: "I can't hear you. Are you able to continue?",
+}
+_SILENCE_ENDCALL_PHRASE = (
+    "It seems we got disconnected. I'll end the call here. Thank you for your time."
+)
 
 
 class CallSession:
@@ -123,10 +141,28 @@ class CallSession:
         self.conversation: list[ConversationMessage] = []
         self.call_state = config.initial_call_state
         self._agent_runs: dict[int, _StoredAgentRun] = {}
+        # In-flight speculative agent tasks, keyed by generation_id.
+        # Launched fire-and-forget from _handle_turn_events so the caller's
+        # state_lock can be released while the LLM call is in flight, which
+        # keeps audio forwarding to STT unblocked during long agent runs.
+        # _handle_confirmed_turn awaits the matching task before consuming
+        # the result. _mark_agent_stale cancels it. end() cancels all.
+        self._pending_agent_tasks: dict[int, asyncio.Task] = {}
         self._last_playback_plan: AudioPlaybackPlan | None = None
         self._end_after_speaking = False
+        # When _end_after_speaking is True, this carries the reason passed to
+        # self.end() once TTS completes. Default reason is the agent-driven
+        # one; the silence escalation path overrides it to "silence_timeout".
+        self._end_after_speaking_reason: str = "agent_end_call_after_speaking"
         self._stt_engine_has_audio = False
         self._pending_sentence_tasks: dict[int, list[asyncio.Task]] = {}
+        # Silence-nudge state. _silence_started_at_ms is the wall-clock origin
+        # of the current silence window — set when the AI finishes speaking
+        # (POST_TTS_GUARD), cleared on any candidate STT event. _nudge_stage
+        # tracks which nudges we've already fired this round (0/1/2) so we
+        # don't re-fire the same level on every advance_time tick.
+        self._silence_started_at_ms: int | None = None
+        self._nudge_stage: int = 0
         self._transition(CallRuntimeState.WAITING_FOR_STREAM, "session_created")
 
     async def handle_telephony_message(
@@ -192,6 +228,18 @@ class CallSession:
         self._trace_payload(event)
         if isinstance(event, SttConnected):
             return CallSessionResult()
+        # Reset the silence escalation only on EVENTS THAT REPRESENT REAL
+        # CANDIDATE SPEECH. SttSpeechStarted is just Deepgram VAD — it
+        # fires on TTS echo bleeding through the candidate microphone, on
+        # background noise, and on any pulse Deepgram's voice detector
+        # picks up. Likewise, Interim/Final events with confidence == 0
+        # are Deepgram's signal for "I'm not confident this is real" — in
+        # practice, that's what we get when the AI's own opener audio
+        # ("junior AI engineer position") gets transcribed back as the
+        # word "AI" with confidence 0. Filter those out so a silent
+        # candidate's mic loopback doesn't keep wiping the silence timer.
+        if self._is_real_candidate_speech(event):
+            self._reset_silence_tracking()
         if isinstance(event, SttSpeechStarted):
             return await self._handle_turn_events(
                 self.endpointing.on_speech_started(event),
@@ -227,6 +275,13 @@ class CallSession:
         return CallSessionResult()
 
     async def advance_time(self, now_ms: int) -> CallSessionResult:
+        # Silence escalation has priority over turn-confirmation. If the
+        # candidate has been silent past the configured threshold, fire the
+        # nudge / escalate / end-call. Otherwise fall through to normal
+        # endpointing-driven turn handling.
+        silence_result = await self._maybe_fire_silence_action(now_ms)
+        if silence_result is not None:
+            return silence_result
         return await self._handle_turn_events(
             self.endpointing.advance_time(now_ms),
             now_ms=now_ms,
@@ -296,18 +351,210 @@ class CallSession:
             ),
         )
 
+    # -----------------------------------------------------------------------
+    # Silence escalation: nudge / escalate / end-call when the candidate
+    # is silent past configured thresholds. See _maybe_fire_silence_action
+    # and the SILENCE_NUDGE_* settings in app.config.Settings.
+    # -----------------------------------------------------------------------
+
+    def _reset_silence_tracking(self) -> None:
+        """Cancel any in-progress silence window.
+
+        Called only when we have high-confidence evidence of real
+        candidate speech (see _is_real_candidate_speech). _nudge_stage is
+        reset to 0 so the next silence round starts fresh from stage 1.
+        """
+        self._silence_started_at_ms = None
+        self._nudge_stage = 0
+
+    def _is_real_candidate_speech(self, event) -> bool:
+        """Return True if `event` represents real candidate speech.
+
+        Filters out the two main sources of false positives we observed:
+
+        * SttSpeechStarted — Deepgram VAD with no text. Fires on TTS echo
+          and ambient noise. Cannot be trusted as a silence-cancel signal.
+        * Interim/Final/TentativeEndpoint with confidence == 0 — Deepgram's
+          own marker for "I'm not sure this is real". In our voice pipeline
+          we see this when the AI's own audio bleeds into the candidate
+          microphone via the speaker.
+
+        SttUtteranceEnded always counts as real — it's an explicit signal
+        that an utterance has ended, which means one happened.
+        """
+        if isinstance(event, SttSpeechStarted):
+            return False
+        if isinstance(event, SttUtteranceEnded):
+            return True
+        if isinstance(event, (
+            SttInterimTranscript,
+            SttFinalSegment,
+            SttTentativeEndpoint,
+        )):
+            text = (getattr(event, "text", "") or "").strip()
+            if not text:
+                return False
+            confidence = getattr(event, "confidence", None)
+            if confidence is not None and confidence <= 0:
+                return False
+            return True
+        return False
+
+    async def _maybe_fire_silence_action(
+        self, now_ms: int
+    ) -> CallSessionResult | None:
+        """Check if a silence nudge or end-call should fire on this tick.
+
+        Returns a CallSessionResult containing the nudge / end-call audio if
+        one is due, otherwise None (so the caller falls through to normal
+        endpointing-driven turn handling).
+        """
+        if self.config.silence_nudge_ms <= 0:
+            return None
+        if self._silence_started_at_ms is None:
+            return None
+        # Only fire when we're genuinely waiting for the candidate. Don't
+        # interrupt our own TTS, the agent, or a tentative turn that's
+        # already in flight.
+        if self.state_machine.state not in (
+            CallRuntimeState.LISTENING,
+            CallRuntimeState.POST_TTS_GUARD,
+        ):
+            return None
+        if self.endpointing.pending_turn is not None:
+            return None
+
+        elapsed = now_ms - self._silence_started_at_ms
+        # End-call has highest priority. Note we fire it independent of
+        # _nudge_stage — even if we never got to stage 2, after 20s of total
+        # silence the call should end politely.
+        if elapsed >= self.config.silence_endcall_ms:
+            return await self._speak_silence_endcall(now_ms=now_ms)
+        if (
+            elapsed >= self.config.silence_nudge_escalate_ms
+            and self._nudge_stage < 2
+        ):
+            return await self._speak_silence_nudge(stage=2, now_ms=now_ms)
+        if elapsed >= self.config.silence_nudge_ms and self._nudge_stage < 1:
+            return await self._speak_silence_nudge(stage=1, now_ms=now_ms)
+        return None
+
+    async def _speak_silence_nudge(
+        self, *, stage: int, now_ms: int
+    ) -> CallSessionResult:
+        """Fire a pre-canned silence nudge as a real assistant turn.
+
+        Reuses the regular _speak_agent_output path so the nudge plays via
+        the same TTS pipeline (including cache), is committed as an
+        assistant message, and respects barge-in (a candidate speaking
+        mid-nudge cancels the TTS via the existing transcript barge-in
+        handler).
+        """
+        text = _SILENCE_NUDGE_PHRASES[stage]
+        generation_id = self.generation_ids.start_generation()
+        self.generation_ids.mark_confirmed(generation_id)
+        self._nudge_stage = stage
+        # NOTE: do not clear _silence_started_at_ms here. The escalation
+        # thresholds (5s/12s/20s) are measured from the original silence
+        # origin, not from each nudge's end. complete_tts will skip
+        # re-arming so the origin persists through the nudge sequence.
+
+        # POST_TTS_GUARD cannot transition directly to SPEAKING per the
+        # state machine, so step through LISTENING first when needed.
+        if self.state_machine.state == CallRuntimeState.POST_TTS_GUARD:
+            self._transition(CallRuntimeState.LISTENING, "silence_nudge_prep")
+
+        logger.info(
+            "silence.nudge call=%s gen=%d stage=%d text_len=%d elapsed_ms=%d",
+            self.config.call_id,
+            generation_id,
+            stage,
+            len(text),
+            now_ms - (self._silence_started_at_ms or now_ms),
+        )
+
+        await self._commit_assistant_turn(
+            generation_id=generation_id,
+            text=text,
+            committed_at_ms=now_ms,
+        )
+        return await self._speak_agent_output(
+            generation_id=generation_id,
+            output=AgentOutput(spoken_text=text, action="continue"),
+            now_ms=now_ms,
+            cache_policy_override=CachePolicy(
+                category=f"silence_nudge_stage_{stage}",
+                allow_persistent_store=True,
+            ),
+        )
+
+    async def _speak_silence_endcall(self, *, now_ms: int) -> CallSessionResult:
+        """Speak the silence-timeout closer and schedule the call to end.
+
+        Sets _end_after_speaking_reason so that complete_tts will call
+        self.end() with reason='silence_timeout' (rather than the default
+        agent-driven reason), giving analytics a way to distinguish
+        silence-driven ends from agent-driven ones.
+        """
+        text = _SILENCE_ENDCALL_PHRASE
+        generation_id = self.generation_ids.start_generation()
+        self.generation_ids.mark_confirmed(generation_id)
+        self._silence_started_at_ms = None  # halt the silence ladder
+
+        if self.state_machine.state == CallRuntimeState.POST_TTS_GUARD:
+            self._transition(CallRuntimeState.LISTENING, "silence_endcall_prep")
+
+        logger.info(
+            "silence.end_call call=%s gen=%d",
+            self.config.call_id,
+            generation_id,
+        )
+
+        # _speak_agent_output reads action='end_call_after_speaking' to set
+        # _end_after_speaking. We override the reason it uses on completion.
+        self._end_after_speaking_reason = "silence_timeout"
+        await self._commit_assistant_turn(
+            generation_id=generation_id,
+            text=text,
+            committed_at_ms=now_ms,
+        )
+        return await self._speak_agent_output(
+            generation_id=generation_id,
+            output=AgentOutput(
+                spoken_text=text, action="end_call_after_speaking"
+            ),
+            now_ms=now_ms,
+            cache_policy_override=CachePolicy(
+                category="silence_endcall",
+                allow_persistent_store=True,
+            ),
+        )
+
     async def complete_tts(self, *, now_ms: int) -> None:
         self.endpointing.mark_tts_completed(now_ms)
         if self.state_machine.state == CallRuntimeState.SPEAKING:
             if self._end_after_speaking:
-                await self.end(reason="agent_end_call_after_speaking", now_ms=now_ms)
+                await self.end(reason=self._end_after_speaking_reason, now_ms=now_ms)
             else:
                 self._transition(CallRuntimeState.POST_TTS_GUARD, "tts_completed")
+                # Arm the silence window the moment the AI stops speaking,
+                # BUT only when we're not mid-way through a nudge round.
+                # During an active nudge sequence (_nudge_stage > 0), the
+                # origin must stay anchored at the candidate's last real
+                # activity so the 5s/12s/20s thresholds describe the total
+                # silence budget — not "5s after each nudge ends".
+                if self._nudge_stage == 0:
+                    self._silence_started_at_ms = now_ms
 
     async def end(self, *, reason: str, now_ms: int) -> CallSessionResult:
         if self.state_machine.state != CallRuntimeState.ENDED:
             if self.state_machine.state != CallRuntimeState.ENDING:
                 self._transition(CallRuntimeState.ENDING, reason)
+            # Cancel any in-flight speculative agent tasks so they don't keep
+            # running (and racing on session state) after the call has ended.
+            for task in list(self._pending_agent_tasks.values()):
+                if not task.done():
+                    task.cancel()
             await self.stt_engine.close()
             await self.persistence.mark_call_ended(
                 ended_at_ms=now_ms,
@@ -361,7 +608,15 @@ class CallSession:
             self._trace_payload(event)
             if isinstance(event, TentativeTurnStarted):
                 self._transition(CallRuntimeState.SPECULATING, "tentative_turn")
-                await self._start_agent_run(event, speculative=True, now_ms=now_ms)
+                # Launch the speculative agent run as a background task so the
+                # caller's state_lock is released while the LLM call is in
+                # flight. Without this, the lock is held for the full agent
+                # latency (~500–1700ms), during which inbound audio frames
+                # cannot be forwarded to STT — and if the lockout exceeds the
+                # endpointing threshold, Deepgram fires a false speech_final
+                # mid-sentence. _handle_confirmed_turn awaits the matching
+                # task before consuming its result.
+                self._launch_speculative_agent_run(event, now_ms=now_ms)
             elif isinstance(event, TentativeTurnCancelled):
                 self._mark_agent_stale(event.generation_id)
                 if self.state_machine.state == CallRuntimeState.SPECULATING:
@@ -437,12 +692,91 @@ class CallSession:
         )
         return output
 
+    def _launch_speculative_agent_run(
+        self,
+        event: TentativeTurnStarted,
+        *,
+        now_ms: int,
+    ) -> None:
+        """Fire the speculative agent run as a background task.
+
+        Caller can release its lock immediately. The task stores its result
+        in self._agent_runs[generation_id] on completion. _handle_confirmed_turn
+        awaits the matching entry in self._pending_agent_tasks before
+        consuming the stored result.
+        """
+        generation_id = event.generation_id
+        # If a task already exists for this generation_id, leave it alone:
+        # the endpointing layer never re-emits TentativeTurnStarted for the
+        # same generation_id (replacements get a fresh id), so this is purely
+        # a defensive guard.
+        existing = self._pending_agent_tasks.get(generation_id)
+        if existing is not None and not existing.done():
+            return
+
+        task = asyncio.create_task(
+            self._safe_speculative_agent_run(event, now_ms=now_ms)
+        )
+        self._pending_agent_tasks[generation_id] = task
+        # Auto-prune so the dict doesn't grow without bound across a long call.
+        task.add_done_callback(
+            lambda _t, gid=generation_id: self._pending_agent_tasks.pop(gid, None)
+        )
+
+    async def _safe_speculative_agent_run(
+        self,
+        event: TentativeTurnStarted,
+        *,
+        now_ms: int,
+    ) -> None:
+        """Wrap _start_agent_run with clean error/cancel handling.
+
+        On CancelledError (from _mark_agent_stale or end()): re-raise so
+        asyncio marks the task cancelled. No stored run is written, so
+        _handle_confirmed_turn will fall through to a fresh sync run if
+        TurnConfirmed ever fires for this generation_id.
+
+        On unexpected exceptions: log and swallow. The agent_runner already
+        emits its own error traces. Same fallback applies.
+        """
+        try:
+            await self._start_agent_run(event, speculative=True, now_ms=now_ms)
+        except asyncio.CancelledError:
+            logger.info(
+                "agent.speculative_cancelled call=%s gen=%d",
+                self.config.call_id,
+                event.generation_id,
+            )
+            raise
+        except Exception:
+            logger.exception(
+                "agent.speculative_failed call=%s gen=%d",
+                self.config.call_id,
+                event.generation_id,
+            )
+
     async def _handle_confirmed_turn(
         self,
         event: TurnConfirmed,
         *,
         now_ms: int,
     ) -> CallSessionResult:
+        # If a speculative agent run is still in flight for this generation,
+        # wait for it before consuming the stored result. This restores the
+        # invariant that _agent_runs[generation_id] is populated by the time
+        # we check it. The wait does hold the caller's lock — but by this
+        # point the user has been silent for confirmation_window_ms, so the
+        # window for losing inbound audio is closed.
+        pending = self._pending_agent_tasks.get(event.generation_id)
+        if pending is not None and not pending.done():
+            try:
+                await pending
+            except (asyncio.CancelledError, Exception):
+                # Errors are logged inside _safe_speculative_agent_run.
+                # Fall through to the no-run path which triggers a fresh
+                # synchronous run below.
+                pass
+
         run = self._agent_runs.get(event.generation_id)
         expected_fingerprint = agent_input_fingerprint(
             self._agent_input(
@@ -708,6 +1042,12 @@ class CallSession:
         run = self._agent_runs.get(generation_id)
         if run is not None:
             run.stale = True
+        # Cancel any in-flight speculative agent task for this generation.
+        # Saves the wasted Groq API call (and the latency it adds to genuine
+        # turns serialised behind it). The done_callback prunes the dict.
+        pending = self._pending_agent_tasks.get(generation_id)
+        if pending is not None and not pending.done():
+            pending.cancel()
         self.audio_resolver.cancel(generation_id)
         for task in self._pending_sentence_tasks.pop(generation_id, []):
             task.cancel()
