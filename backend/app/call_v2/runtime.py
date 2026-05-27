@@ -52,6 +52,37 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_CALL_STATUSES = ("pending", "queued", "ringing", "in_progress")
 
+CALL_V2_DEFAULT_TONE = "professional and warm"
+CALL_V2_INTERACTIVE_TONE = "warm, upbeat, curious, and natural"
+CALL_V2_INTERACTIVE_STYLE_CONSTRAINT = (
+    "Sound like a warm, attentive recruiter on a live phone call. Be lightly "
+    "enthusiastic, curious, and encouraging, but never theatrical. Use brief "
+    "acknowledgements like 'That is helpful', 'Got it', or 'Nice, thanks' only "
+    "when natural. Keep responses concise and continue the interview efficiently."
+)
+CALL_V2_DEFAULT_OPENER_TEMPLATE = (
+    "Hello {candidate_name}, this is a screening call for the {job_title} position."
+    " This call may be recorded for quality purposes."
+    " Do I have your consent to proceed with a few questions?"
+)
+CALL_V2_INTERACTIVE_OPENER_TEMPLATE = (
+    "Hi {candidate_name}, this is the AI screening call for the {job_title} position."
+    " I am glad we could connect. This call may be recorded for quality purposes."
+    " Do I have your consent to continue with a few quick questions?"
+)
+CALL_V2_INTERACTIVE_SILENCE_NUDGE_PHRASES = {
+    1: "Hi, are you still with me?",
+    2: "I still can't hear you clearly. Are you able to continue?",
+}
+CALL_V2_INTERACTIVE_SILENCE_ENDCALL_PHRASE = (
+    "Looks like we may have lost the connection, so I will end the call here. "
+    "Thanks for your time."
+)
+
+
+def _call_v2_interactive_style_enabled(settings: object) -> bool:
+    return bool(getattr(settings, "CALL_V2_INTERACTIVE_STYLE_ENABLED", True))
+
 
 @dataclass(frozen=True, slots=True)
 class CallV2Context:
@@ -85,6 +116,7 @@ class CallV2RuntimeFactory:
         context = await load_call_v2_context(resume_id=resume_id, provider=provider)
         agent_config = build_agent_config(context)
         opener_text = _render_opener_template(agent_config.opener_template, context)
+        interactive_style_enabled = _call_v2_interactive_style_enabled(settings)
 
         # Browser simulator sends wideband audio, not 8kHz telephone audio.
         # Using the phonecall model on wideband returns garbage transcripts
@@ -129,6 +161,16 @@ class CallV2RuntimeFactory:
                 silence_nudge_ms=settings.PIPELINE_SILENCE_NUDGE_MS,
                 silence_nudge_escalate_ms=settings.PIPELINE_SILENCE_NUDGE_ESCALATE_MS,
                 silence_endcall_ms=settings.PIPELINE_SILENCE_ENDCALL_MS,
+                silence_nudge_phrases=(
+                    CALL_V2_INTERACTIVE_SILENCE_NUDGE_PHRASES
+                    if interactive_style_enabled
+                    else None
+                ),
+                silence_endcall_phrase=(
+                    CALL_V2_INTERACTIVE_SILENCE_ENDCALL_PHRASE
+                    if interactive_style_enabled
+                    else None
+                ),
             ),
             telephony_adapter=_adapter_for_provider(provider),
             stt_engine=stt_engine,
@@ -640,6 +682,12 @@ async def load_call_v2_context(
 
 
 def build_agent_config(context: CallV2Context) -> AgentConfig:
+    settings = get_settings()
+    interactive_style_enabled = _call_v2_interactive_style_enabled(settings)
+    style_constraints = (
+        [CALL_V2_INTERACTIVE_STYLE_CONSTRAINT] if interactive_style_enabled else []
+    )
+
     return AgentConfig(
         agent_name="Recruiting Call Agent",
         instructions=(
@@ -675,16 +723,16 @@ def build_agent_config(context: CallV2Context) -> AgentConfig:
             ],
         ),
         opener_template=(
-            "Hello {candidate_name}, this is a screening call for the {job_title} position."
-            " This call may be recorded for quality purposes."
-            " Do I have your consent to proceed with a few questions?"
+            CALL_V2_INTERACTIVE_OPENER_TEMPLATE
+            if interactive_style_enabled
+            else CALL_V2_DEFAULT_OPENER_TEMPLATE
         ),
         context={
             # Standard variables for opener_template rendering:
             #   {candidate_name}, {job_title}, {company_name}
             "candidate_name": context.resume.candidate_name or "there",
             "job_title": context.job.title,
-            "company_name": get_settings().COMPANY_NAME or "our team",
+            "company_name": settings.COMPANY_NAME or "our team",
             "job": {
                 "title": context.job.title,
                 "description": context.job.description,
@@ -725,9 +773,14 @@ def build_agent_config(context: CallV2Context) -> AgentConfig:
             "If the candidate asks who you are or what the call is about, answer in one short sentence: you are an AI assistant calling on behalf of the company for a screening interview. Then continue with the screening.",
             "Never repeat the opener.",
             "If your previous turn ended with a question, do not ask that same question again. Phrase the next response differently or move forward.",
+            *style_constraints,
         ],
         response_style=ResponseStyle(
-            tone="professional and warm",
+            tone=(
+                CALL_V2_INTERACTIVE_TONE
+                if interactive_style_enabled
+                else CALL_V2_DEFAULT_TONE
+            ),
             max_spoken_sentences=2,
             ask_one_thing_at_a_time=True,
         ),

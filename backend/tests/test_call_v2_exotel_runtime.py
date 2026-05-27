@@ -13,6 +13,12 @@ from app.call_v2.audio.formats import LINEAR16_8K_MONO
 from app.call_v2.runtime import (
     CallV2RuntimeFactory,
     CallV2Context,
+    CALL_V2_DEFAULT_TONE,
+    CALL_V2_INTERACTIVE_OPENER_TEMPLATE,
+    CALL_V2_INTERACTIVE_SILENCE_ENDCALL_PHRASE,
+    CALL_V2_INTERACTIVE_SILENCE_NUDGE_PHRASES,
+    CALL_V2_INTERACTIVE_STYLE_CONSTRAINT,
+    CALL_V2_INTERACTIVE_TONE,
     build_agent_config,
     build_deepgram_keyterms,
     _adapter_for_provider,
@@ -158,6 +164,25 @@ def test_agent_config_carries_questions_context_and_non_deterministic_policy():
     assert any("At most one follow-up" in c for c in config.constraints)
     assert any("Never repeat the opener" in c for c in config.constraints)
     assert any("do not ask that same question again" in c for c in config.constraints)
+    assert config.response_style.tone == CALL_V2_INTERACTIVE_TONE
+    assert CALL_V2_INTERACTIVE_STYLE_CONSTRAINT in config.constraints
+    assert config.opener_template == CALL_V2_INTERACTIVE_OPENER_TEMPLATE
+
+
+def test_agent_config_interactive_style_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "app.call_v2.runtime.get_settings",
+        lambda: SimpleNamespace(
+            CALL_V2_INTERACTIVE_STYLE_ENABLED=False,
+            COMPANY_NAME="RecruiteAI",
+        ),
+    )
+
+    config = build_agent_config(_context())
+
+    assert config.response_style.tone == CALL_V2_DEFAULT_TONE
+    assert CALL_V2_INTERACTIVE_STYLE_CONSTRAINT not in config.constraints
+    assert config.opener_template != CALL_V2_INTERACTIVE_OPENER_TEMPLATE
 
 
 def test_deepgram_keyterms_are_unique_and_contextual():
@@ -210,6 +235,8 @@ async def test_exotel_runtime_disables_raw_audio_tentative_cancellation(monkeypa
     )
 
     assert session.config.raw_audio_cancels_tentative_turns is False
+    assert session.config.silence_nudge_phrases == CALL_V2_INTERACTIVE_SILENCE_NUDGE_PHRASES
+    assert session.config.silence_endcall_phrase == CALL_V2_INTERACTIVE_SILENCE_ENDCALL_PHRASE
 
 
 @pytest.mark.asyncio
@@ -296,6 +323,8 @@ async def test_browser_runtime_uses_browser_simulator_adapter(monkeypatch):
 
     assert isinstance(session.telephony_adapter, BrowserSimulatorTelephonyAdapter)
     assert session.config.raw_audio_cancels_tentative_turns is False
+    assert session.config.silence_nudge_phrases == CALL_V2_INTERACTIVE_SILENCE_NUDGE_PHRASES
+    assert session.config.silence_endcall_phrase == CALL_V2_INTERACTIVE_SILENCE_ENDCALL_PHRASE
 
 
 @pytest.mark.asyncio

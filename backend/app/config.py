@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # --- Seed User ---
-    SEED_USER_EMAIL: str = "dinesh.tomar@yopmail.com"
+    SEED_USER_EMAIL: str = "nandan.kumar@crownstack.com"
     SEED_USER_PASSWORD: str = "Password@123"
-    SEED_USER_NAME: str = "Dinesh Tomar"
+    SEED_USER_NAME: str = "Nandan Kumar"
 
     # --- Agent provider ---
     # "openai" uses OPENAI_TEXT_MODEL; "groq" uses GROQ_AGENT_MODEL via Groq's OpenAI-compatible API.
@@ -129,6 +129,7 @@ class Settings(BaseSettings):
     TTS_PROVIDER: str = "deepgram"  # deepgram, sarvam
     STT_PROVIDER: str = "deepgram"  # deepgram, openai
     OPENAI_STT_TURN_DETECTION_MODE: str = "server_vad"  # server_vad, manual_commit
+    CALL_V2_INTERACTIVE_STYLE_ENABLED: bool = True
 
 
     # --- LangSmith ---

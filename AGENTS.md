@@ -67,7 +67,7 @@ cd frontend && npm run lint   # eslint
 - **Call v2 runtime** (`backend/app/call_v2/`): primary runtime for Exotel. Handles telephony, STT, endpointing/speculation, agent, TTS, persistence, and trace. Exotel calls are routed here exclusively — the v1 services never see an Exotel provider.
 - **v1 call services** (`backend/app/services/`): `realtime_bridge.py` (OpenAI Realtime, Twilio/browser), `deepgram_runtime.py` (Deepgram STT + GPT-4o + TTS, browser only now), `voice_runtime.py` (dispatcher for browser/Twilio), `telephony.py` (Twilio/Exotel/browser/mock facade), `resume_processor.py`, `call_evaluation.py`. These remain active for browser-provider and Twilio calls (Phase 12 deferred).
 - **Startup behavior**: `Base.metadata.create_all` runs on startup (auto-creates tables). Alembic migrations exist but are not strictly required for local dev. A `ensure_runtime_schema()` function applies additive ALTER TABLE statements for columns not yet in migrations.
-- **Seed user**: Created on first startup if no users exist. Defaults from `backend/app/config.py`: `dinesh.tomar@yopmail.com` / `Password@123`
+- **Seed user**: Created on first startup if no users exist. Defaults from `backend/app/config.py`: `nandan.kumar@crownstack.com` / `Password@123`
 - **Telephony modes**: `TELEPHONY_PROVIDER` = `twilio` | `exotel` | `browser` | `mock`. Mock mode simulates calls without credentials.
 - **Voice runtimes**: Exotel always uses `call_v2` (hardcoded in `routers/calls.py`). Other providers use `VOICE_RUNTIME` = `openai_realtime` | `deepgram_openai`. `TTS_PROVIDER` = `deepgram` | `sarvam`.
 - **Exotel URL mangling**: Exotel mangles `/health` to `/healhttps` — there's a catch-all route for this.

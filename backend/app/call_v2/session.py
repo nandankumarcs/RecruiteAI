@@ -75,6 +75,8 @@ class CallSessionConfig:
     silence_nudge_ms: int = 5000
     silence_nudge_escalate_ms: int = 12000
     silence_endcall_ms: int = 20000
+    silence_nudge_phrases: dict[int, str] | None = None
+    silence_endcall_phrase: str | None = None
 
 
 @dataclass(slots=True)
@@ -450,7 +452,8 @@ class CallSession:
         mid-nudge cancels the TTS via the existing transcript barge-in
         handler).
         """
-        text = _SILENCE_NUDGE_PHRASES[stage]
+        phrases = self.config.silence_nudge_phrases or _SILENCE_NUDGE_PHRASES
+        text = phrases[stage]
         generation_id = self.generation_ids.start_generation()
         self.generation_ids.mark_confirmed(generation_id)
         self._nudge_stage = stage
@@ -496,7 +499,7 @@ class CallSession:
         agent-driven reason), giving analytics a way to distinguish
         silence-driven ends from agent-driven ones.
         """
-        text = _SILENCE_ENDCALL_PHRASE
+        text = self.config.silence_endcall_phrase or _SILENCE_ENDCALL_PHRASE
         generation_id = self.generation_ids.start_generation()
         self.generation_ids.mark_confirmed(generation_id)
         self._silence_started_at_ms = None  # halt the silence ladder

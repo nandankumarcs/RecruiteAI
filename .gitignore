@@ -64,3 +64,4 @@ backend/create_test_user.py
 backend/manual_test_*.py
 backend/test_*.py
 backend/place_test_call.py
+.qoder
