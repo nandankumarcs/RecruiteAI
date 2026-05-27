@@ -83,14 +83,14 @@ class Settings(BaseSettings):
     SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS: float = 30.0
     PIPELINE_FILLERS_ENABLED: bool = False   # set True to re-enable filler phrases
     PIPELINE_TTS_JITTER_BUFFER_MS: int = 200
-    PIPELINE_STT_ENDPOINTING_MS: int = 1500   # default conservative; override in .env (e.g. 500 for speculative mode)
-    PIPELINE_STT_UTTERANCE_END_MS: int = 2500  # 1000→2500: gives candidate time to finish
+    PIPELINE_STT_ENDPOINTING_MS: int = 500    # Deepgram server-side silence before utterance_ended fires
+    PIPELINE_STT_UTTERANCE_END_MS: int = 1500  # Deepgram UtteranceEnd fallback window
     PIPELINE_USER_FRAGMENT_GRACE_MS: int = 2000 # 1500→2000: covers slower speakers
     PIPELINE_MIN_TURN_SECONDS: float = 1.5     # 1.0→1.5: require 1.5s of speech before LLM
     # Speculative LLM execution: fire LLM at endpointing silence, commit after this extra window.
-    # Net silence before AI responds = PIPELINE_STT_ENDPOINTING_MS + PIPELINE_SPECULATIVE_CONFIRMATION_MS.
+    # Net silence before AI responds = PIPELINE_STT_ENDPOINTING_MS + max(PIPELINE_SPECULATIVE_CONFIRMATION_MS, LLM_latency).
     # Set to 0 to disable speculative mode (commit immediately at endpointing).
-    PIPELINE_SPECULATIVE_CONFIRMATION_MS: int = 1000
+    PIPELINE_SPECULATIVE_CONFIRMATION_MS: int = 400
     # Silence-nudge escalation: when the candidate is silent after the AI
     # finishes speaking, fire a gentle nudge at NUDGE_MS, a stronger nudge at
     # ESCALATE_MS, and end the call at ENDCALL_MS. Set NUDGE_MS to 0 to
