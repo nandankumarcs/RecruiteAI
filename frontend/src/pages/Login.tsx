@@ -110,7 +110,7 @@ export function Login() {
             
             <div className="text-center mt-6">
               <p className="text-xs text-muted-foreground">
-                Demo access: <span className="font-mono text-primary/80">dinesh.tomar@yopmail.com</span>
+                Demo access: <span className="font-mono text-primary/80">nandan.kumar@crownstack.com</span>
               </p>
             </div>
           </form>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { Calendar, ChevronLeft, MapPin, PhoneCall, UploadCloud } from "lucide-react";
+import { Calendar, ChevronLeft, Download, PhoneCall, UploadCloud } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { CallRecord } from "@/lib/calls";
@@ -30,6 +30,9 @@ type ResumeSortBy = "matching_score" | "candidate_name" | "status" | "created_at
 type CallSortBy = "created_at" | "status" | "phone_number";
 type SortOrder = "asc" | "desc";
 
+const resumeSortKeys: ResumeSortBy[] = ["matching_score", "candidate_name", "status", "created_at"];
+const callSortKeys: CallSortBy[] = ["created_at", "status", "phone_number"];
+
 const tabs: Array<{ key: DetailTab; label: string }> = [
 
   { key: "resumes", label: "Candidates" },
@@ -53,6 +56,7 @@ export function JobDetail() {
   const [resumeToDelete, setResumeToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [isExportingCandidates, setIsExportingCandidates] = useState(false);
 
   const [totalResumes, setTotalResumes] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -119,11 +123,13 @@ export function JobDetail() {
     }
   }, [jobId, pageSize, callsPageSize, toast]);
 
-  const handleSortChange = useCallback((newSortBy: ResumeSortBy, newSortOrder: SortOrder) => {
-    setSortBy(newSortBy);
+  const handleSortChange = useCallback((newSortBy: string, newSortOrder: SortOrder) => {
+    if (!resumeSortKeys.includes(newSortBy as ResumeSortBy)) return;
+    const nextSortBy = newSortBy as ResumeSortBy;
+    setSortBy(nextSortBy);
     setSortOrder(newSortOrder);
     setCurrentPage(1);
-    void fetchResumes(1, newSortBy, newSortOrder);
+    void fetchResumes(1, nextSortBy, newSortOrder);
   }, [fetchResumes]);
 
   const handlePageChange = useCallback((newPage: number) => {
@@ -146,11 +152,13 @@ export function JobDetail() {
     }
   }, [jobId, callsPageSize, toast]);
 
-  const handleCallsSortChange = useCallback((newSortBy: CallSortBy, newSortOrder: SortOrder) => {
-    setCallsSortBy(newSortBy);
+  const handleCallsSortChange = useCallback((newSortBy: string, newSortOrder: SortOrder) => {
+    if (!callSortKeys.includes(newSortBy as CallSortBy)) return;
+    const nextSortBy = newSortBy as CallSortBy;
+    setCallsSortBy(nextSortBy);
     setCallsSortOrder(newSortOrder);
     setCallsPage(1);
-    void fetchCalls(1, newSortBy, newSortOrder);
+    void fetchCalls(1, nextSortBy, newSortOrder);
   }, [fetchCalls]);
 
   const handleCallsPageChange = useCallback((newPage: number) => {
@@ -217,6 +225,43 @@ export function JobDetail() {
       return previous.map((call) => (call.id === updatedCall.id ? updatedCall : call));
     });
   }, []);
+
+  const handleExportCandidates = useCallback(async () => {
+    if (!jobId || isExportingCandidates) return;
+    setIsExportingCandidates(true);
+    try {
+      const response = await api.get(`/jobs/${jobId}/resumes/export`, {
+        responseType: "blob",
+      });
+      const blob = new Blob([response.data], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const disposition = response.headers["content-disposition"];
+      const filenameMatch = disposition?.match(/filename="?([^"]+)"?/i);
+      link.href = url;
+      link.download = filenameMatch?.[1] || "candidates.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast({
+        variant: "success",
+        title: "Export ready",
+        description: "Candidate spreadsheet downloaded.",
+      });
+    } catch (error) {
+      console.error("Failed to export candidates", error);
+      toast({
+        variant: "error",
+        title: "Export failed",
+        description: "We couldn't export candidates just now.",
+      });
+    } finally {
+      setIsExportingCandidates(false);
+    }
+  }, [isExportingCandidates, jobId, toast]);
 
   if (isLoading) {
     return (
@@ -339,9 +384,21 @@ export function JobDetail() {
                 <div className="space-y-6">
                   <div className="flex items-center justify-between px-2">
                     <h3 className="text-3xl font-black tracking-tighter">CANDIDATES</h3>
-                    <Badge variant="outline" className="font-black tracking-tight uppercase px-4 py-1.5 rounded-lg border-primary/20 bg-primary/10 text-primary">
-                      {totalResumes} Total
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-9 rounded-lg border-primary/20 bg-primary/5 px-3 text-xs font-black uppercase tracking-tight text-primary hover:bg-primary/10"
+                        onClick={handleExportCandidates}
+                        disabled={isExportingCandidates || totalResumes === 0}
+                      >
+                        <Download className="mr-1.5 h-3.5 w-3.5" />
+                        {isExportingCandidates ? "Exporting" : "Export"}
+                      </Button>
+                      <Badge variant="outline" className="font-black tracking-tight uppercase px-4 py-1.5 rounded-lg border-primary/20 bg-primary/10 text-primary">
+                        {totalResumes} Total
+                      </Badge>
+                    </div>
                   </div>
                   <ResumeTable
                     resumes={resumes}

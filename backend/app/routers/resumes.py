@@ -9,12 +9,16 @@ import json
 import logging
 import os
 import uuid
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
+from datetime import datetime, UTC
 from typing import Literal
+from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +44,15 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_RESUME_TYPES = {"pdf", "docx"}
 
+EXPORT_HEADERS = [
+    "Candidate Name",
+    "Email",
+    "Phone Number",
+    "Resume File Name",
+    "AI Score",
+    "AI Insight",
+]
+
 
 def _validate_resume_file(file: UploadFile) -> str:
     if not file.filename:
@@ -49,6 +62,94 @@ def _validate_resume_file(file: UploadFile) -> str:
     if extension not in ALLOWED_RESUME_TYPES:
         raise ValidationError("Unsupported file type. Only PDF and DOCX are allowed.")
     return extension
+
+
+def _display_resume_filename(file_path: str) -> str:
+    filename = Path(file_path).name
+    parts = filename.split("-", 1)
+    if len(parts) == 2:
+        try:
+            uuid.UUID(parts[0])
+            return parts[1]
+        except ValueError:
+            pass
+    return filename
+
+
+def _xlsx_cell_ref(column_index: int, row_index: int) -> str:
+    column_name = ""
+    while column_index:
+        column_index, remainder = divmod(column_index - 1, 26)
+        column_name = chr(65 + remainder) + column_name
+    return f"{column_name}{row_index}"
+
+
+def _build_candidates_export_xlsx(rows: list[list[object | None]]) -> bytes:
+    sheet_rows = [EXPORT_HEADERS, *rows]
+    sheet_xml_rows = []
+    for row_index, row in enumerate(sheet_rows, start=1):
+        cells = []
+        for column_index, value in enumerate(row, start=1):
+            cell_ref = _xlsx_cell_ref(column_index, row_index)
+            text = "" if value is None else str(value)
+            cells.append(
+                f'<c r="{cell_ref}" t="inlineStr"><is><t>{escape(text)}</t></is></c>'
+            )
+        sheet_xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<cols>'
+        '<col min="1" max="1" width="28" customWidth="1"/>'
+        '<col min="2" max="2" width="32" customWidth="1"/>'
+        '<col min="3" max="3" width="18" customWidth="1"/>'
+        '<col min="4" max="4" width="36" customWidth="1"/>'
+        '<col min="5" max="5" width="12" customWidth="1"/>'
+        '<col min="6" max="6" width="80" customWidth="1"/>'
+        '</cols>'
+        f'<sheetData>{"".join(sheet_xml_rows)}</sheetData>'
+        '</worksheet>'
+    )
+
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Candidates" sheetId="1" r:id="rId1"/></sheets>'
+        '</workbook>'
+    )
+    workbook_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        '</Relationships>'
+    )
+    root_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '</Relationships>'
+    )
+    content_types_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '</Types>'
+    )
+
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types_xml)
+        archive.writestr("_rels/.rels", root_rels_xml)
+        archive.writestr("xl/workbook.xml", workbook_xml)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    return output.getvalue()
 
 
 async def _get_owned_job(
@@ -164,6 +265,7 @@ async def _process_resumes_background(
                     db.add(resume)
                     await db.flush()
                     await db.refresh(resume)
+                    await db.commit()
                     
                     # Completed
                     await emitter.emit_completed(
@@ -171,19 +273,18 @@ async def _process_resumes_background(
                         candidate_name=resume.candidate_name,
                         email=resume.email,
                         phone_number=resume.phone_number,
-                        matching_score=resume.matching_score
+                        matching_score=resume.matching_score,
+                        resume_id=str(resume.id),
                     )
                     
                 except Exception as e:
+                    await db.rollback()
                     logger.error(f"Error processing resume {filename}: {e}")
                     await emitter.emit_error(
                         session_id, index, total_resumes, filename,
                         error_message=str(e),
                         failed_stage="unknown"
                     )
-            
-            # Commit all changes
-            await db.commit()
             
             # All completed
             await emitter.emit_all_completed(session_id, total_resumes)
@@ -345,6 +446,48 @@ async def stream_resume_progress(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         }
+    )
+
+
+@router.get("/api/jobs/{job_id}/resumes/export")
+async def export_resumes(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Export all candidates with contact details for a job as an Excel workbook."""
+    job = await _get_owned_job(job_id, db, current_user)
+
+    result = await db.execute(
+        select(Resume)
+        .where(Resume.job_id == job_id)
+        .order_by(desc(Resume.matching_score).nullslast(), desc(Resume.created_at))
+    )
+    resumes = result.scalars().all()
+
+    rows = []
+    for resume in resumes:
+        if not resume.email and not resume.phone_number:
+            continue
+        rows.append(
+            [
+                resume.candidate_name or "",
+                resume.email or "",
+                resume.phone_number or "",
+                _display_resume_filename(resume.file_path),
+                "" if resume.matching_score is None else f"{round(resume.matching_score)}%",
+                resume.match_explanation or "",
+            ]
+        )
+
+    workbook = _build_candidates_export_xlsx(rows)
+    safe_title = "".join(ch if ch.isalnum() else "-" for ch in job.title.lower()).strip("-")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d")
+    filename = f"{safe_title or 'job'}-candidates-{timestamp}.xlsx"
+    return Response(
+        workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

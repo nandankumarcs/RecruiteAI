@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   Cpu,
   DollarSign,
-  Headphones,
   Loader2,
   MessageSquare,
   PhoneCall,
@@ -87,6 +86,29 @@ interface TurnAnalysis {
 }
 
 type CallDetailData = CallRecord;
+
+interface CallStartResponse {
+  provider: string;
+  call: CallRecord;
+  join_url?: string | null;
+}
+
+function openSimulatorPopup(url: string) {
+  const width = 480;
+  const height = 960;
+  const left = Math.round((screen.width - width) / 2);
+  const top = Math.round((screen.height - height) / 2);
+  const popup = window.open(
+    url,
+    "recruiteai_simulator",
+    `width=${width},height=${height},left=${left},top=${top},resizable=no,scrollbars=no,toolbar=no,menubar=no,location=no,status=no`,
+  );
+  if (popup) {
+    popup.focus();
+  } else {
+    window.open(url, "_blank", "noopener");
+  }
+}
 
 
 const scoreItems = [
@@ -187,11 +209,13 @@ function fmtMs(ms: number | null): string {
 
 export function CallDetail() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const { callId } = useParams<{ callId: string }>();
   const [call, setCall] = useState<CallDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [isEvaluating, setIsEvaluating] = useState(false);
+  const [isStartingCall, setIsStartingCall] = useState(false);
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const [recordingLoading, setRecordingLoading] = useState(false);
   const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
@@ -365,6 +389,43 @@ export function CallDetail() {
     }
   };
 
+  const startCallAgain = async () => {
+    if (!call) return;
+
+    try {
+      setIsStartingCall(true);
+      setError("");
+      const response = await api.post<CallStartResponse>(
+        `/resumes/${call.resume_id}/calls/start`,
+        { phone_number: call.phone_number }
+      );
+      const nextCall = response.data.call;
+
+      if (response.data.join_url) {
+        openSimulatorPopup(response.data.join_url);
+      }
+
+      toast({
+        variant: "success",
+        title: "Call started",
+        description: response.data.join_url
+          ? "Simulator opening — accept the call in the new window."
+          : "The interview call has been queued successfully.",
+      });
+      navigate(`/calls/${nextCall.id}`);
+    } catch (err) {
+      console.error("Failed to start follow-up call", err);
+      setError("Could not start another call for this candidate.");
+      toast({
+        variant: "error",
+        title: "Call start failed",
+        description: "We couldn't start another interview call just now.",
+      });
+    } finally {
+      setIsStartingCall(false);
+    }
+  };
+
   const transcriptLines = useMemo(() => {
     if (call?.messages && call.messages.length > 0) {
       return [...call.messages].sort((a, b) => a.sequence_number - b.sequence_number).map((m) => ({
@@ -450,9 +511,23 @@ export function CallDetail() {
               Review the transcript, recording, and evaluation for this interview.
             </p>
           </div>
-          <Badge variant="outline" className="px-3 py-1 text-sm capitalize">
-            {call.status.replace("_", " ")}
-          </Badge>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              onClick={startCallAgain}
+              disabled={isStartingCall || isLive}
+              className="h-10 rounded-lg px-4 font-semibold"
+            >
+              {isStartingCall ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <PhoneCall className="mr-2 h-4 w-4" />
+              )}
+              Call Again
+            </Button>
+            <Badge variant="outline" className="px-3 py-1 text-sm capitalize">
+              {call.status.replace("_", " ")}
+            </Badge>
+          </div>
         </div>
       </div>
 
@@ -565,16 +640,7 @@ export function CallDetail() {
             className="shrink-0 bg-indigo-600 hover:bg-indigo-500 text-white"
             onClick={() => {
               const url = `${window.location.origin}/sim/call/${call.id}`;
-              const W = 480, H = 960;
-              const left = Math.round((screen.width  - W) / 2);
-              const top  = Math.round((screen.height - H) / 2);
-              const popup = window.open(
-                url,
-                "recruiteai_simulator",
-                `width=${W},height=${H},left=${left},top=${top},resizable=no,scrollbars=no,toolbar=no,menubar=no,location=no,status=no`,
-              );
-              if (popup) popup.focus();
-              else window.open(url, "_blank", "noopener");
+              openSimulatorPopup(url);
             }}
           >
             Open Simulator ↗

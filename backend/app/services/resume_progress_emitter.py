@@ -146,7 +146,8 @@ class ResumeProgressEmitter:
         candidate_name: Optional[str] = None,
         email: Optional[str] = None,
         phone_number: Optional[str] = None,
-        matching_score: Optional[float] = None
+        matching_score: Optional[float] = None,
+        resume_id: Optional[str] = None,
     ) -> None:
         """
         Emit 'completed' event when resume processing completes successfully.
@@ -160,6 +161,7 @@ class ResumeProgressEmitter:
             email: Email address of the candidate (optional)
             phone_number: Phone number of the candidate (optional)
             matching_score: Matching score against job description (optional)
+            resume_id: Database id of the saved resume (optional)
         """
         event = ProgressEvent(
             event_type="completed",
@@ -171,6 +173,7 @@ class ResumeProgressEmitter:
             email=email,
             phone_number=phone_number,
             matching_score=matching_score,
+            resume_id=resume_id,
             timestamp=datetime.utcnow()
         )
         await self._session_manager.emit_progress(session_id, event)

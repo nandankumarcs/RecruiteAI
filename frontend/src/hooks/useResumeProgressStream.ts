@@ -102,11 +102,20 @@ export function useResumeProgressStream(
 
   useEffect(() => {
     if (!jobId || !sessionId) {
+      cleanup();
+      setResumes([]);
+      setIsConnected(false);
+      setIsComplete(false);
+      setError(null);
+      isCompleteRef.current = false;
       return;
     }
 
     retryCountRef.current = 0;
     isCompleteRef.current = false;
+    setResumes([]);
+    setIsComplete(false);
+    setError(null);
 
     function connect() {
       cleanup();

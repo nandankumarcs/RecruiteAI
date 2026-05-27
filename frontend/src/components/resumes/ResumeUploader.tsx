@@ -17,22 +17,38 @@ export function ResumeUploader({ jobId, onUploadSuccess }: ResumeUploaderProps) 
   const [isUploading, setIsUploading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const refreshedCompletedCountRef = useRef(0);
 
   // Use SSE streaming hook for real-time progress
-  const { resumes: progressResumes, isConnected, isComplete, error: streamError } = 
+  const { resumes: progressResumes, isComplete, error: streamError } = 
     useResumeProgressStream(jobId, sessionId);
+
+  const completedCount = progressResumes.filter(r => r.status === 'completed').length;
+
+  // Refresh the table as each resume becomes durable in the database.
+  useEffect(() => {
+    if (!sessionId || !isUploading || completedCount <= refreshedCompletedCountRef.current) {
+      return;
+    }
+
+    refreshedCompletedCountRef.current = completedCount;
+    onUploadSuccess();
+  }, [completedCount, isUploading, onUploadSuccess, sessionId]);
 
   // Handle completion
   useEffect(() => {
     if (isComplete && progressResumes.length > 0) {
-      const successCount = progressResumes.filter(r => r.status === 'completed').length;
+      const successCount = completedCount;
       const errorCount = progressResumes.filter(r => r.status === 'error').length;
       
       setTimeout(() => {
         setFiles([]);
         setSessionId(null);
         setIsUploading(false);
-        onUploadSuccess();
+        if (successCount > refreshedCompletedCountRef.current) {
+          refreshedCompletedCountRef.current = successCount;
+          onUploadSuccess();
+        }
         
         if (errorCount === 0) {
           toast.success(`${successCount} resume(s) processed successfully!`);
@@ -41,7 +57,7 @@ export function ResumeUploader({ jobId, onUploadSuccess }: ResumeUploaderProps) 
         }
       }, 1000);
     }
-  }, [isComplete, progressResumes, onUploadSuccess]);
+  }, [completedCount, isComplete, progressResumes, onUploadSuccess]);
 
   const addFiles = (newFiles: File[]) => {
     const validFiles = newFiles.filter(
@@ -96,6 +112,7 @@ export function ResumeUploader({ jobId, onUploadSuccess }: ResumeUploaderProps) 
   const uploadResumes = async () => {
     if (files.length === 0) return;
 
+    refreshedCompletedCountRef.current = 0;
     setIsUploading(true);
     
     const formData = new FormData();
