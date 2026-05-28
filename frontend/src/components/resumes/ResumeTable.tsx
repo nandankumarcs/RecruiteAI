@@ -71,12 +71,16 @@ export function ResumeTable({
       key: "candidate",
       label: "Candidate",
       sortKey: "candidate_name",
+      className: "w-64 max-w-64 overflow-hidden",
+      headerClassName: "w-64 max-w-64",
       cell: (resume) => (
-        <div className="flex items-center gap-3">
-          <div className="rounded-lg bg-primary/10 p-2.5 text-primary shadow-sm group-hover:scale-110 transition-transform">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="shrink-0 rounded-lg bg-primary/10 p-2.5 text-primary shadow-sm group-hover:scale-110 transition-transform">
             <User className="h-4 w-4" />
           </div>
-          <span className="font-bold text-sm tracking-tight">{getDisplayName(resume)}</span>
+          <span className="font-bold text-sm tracking-tight truncate" title={getDisplayName(resume)}>
+            {getDisplayName(resume)}
+          </span>
         </div>
       ),
     },

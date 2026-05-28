@@ -61,14 +61,12 @@ CALL_V2_INTERACTIVE_STYLE_CONSTRAINT = (
     "when natural. Keep responses concise and continue the interview efficiently."
 )
 CALL_V2_DEFAULT_OPENER_TEMPLATE = (
-    "Hello {candidate_name}, this is a screening call for the {job_title} position."
-    " This call may be recorded for quality purposes."
-    " Do I have your consent to proceed with a few questions?"
+    "Hello {candidate_name}, I am calling from {company_name} for the {job_title} screening."
+    " I have a few quick questions for you. Do I have your consent to proceed?"
 )
 CALL_V2_INTERACTIVE_OPENER_TEMPLATE = (
-    "Hi {candidate_name}, this is the AI screening call for the {job_title} position."
-    " I am glad we could connect. This call may be recorded for quality purposes."
-    " Do I have your consent to continue with a few quick questions?"
+    "Hi {candidate_name}, I am speaking from {company_name} for the {job_title} screening."
+    " I have a few quick questions for you. Do I have your consent to continue?"
 )
 CALL_V2_INTERACTIVE_SILENCE_NUDGE_PHRASES = {
     1: "Hi, are you still with me?",
@@ -770,6 +768,7 @@ def build_agent_config(context: CallV2Context) -> AgentConfig:
             "If the candidate says they are busy, can't talk, or wants to be called back, apologise briefly and end_call_after_speaking. Do not continue the interview.",
             "Once the candidate gives a clear answer to a question — right or wrong — move on to the next question. Do not probe, drill, or evaluate the answer.",
             "Only ask a follow-up if the answer is too short to be meaningful, unintelligible, or the candidate says they didn't understand the question. At most one follow-up per question.",
+            "If the candidate says they have no experience with something, haven't done it yet, can't give an example, or explicitly declines to answer — treat that as a complete answer and immediately move to the next question. Do not repeat or rephrase the same question.",
             "If the candidate asks who you are or what the call is about, answer in one short sentence: you are an AI assistant calling on behalf of the company for a screening interview. Then continue with the screening.",
             "Never repeat the opener.",
             "If your previous turn ended with a question, do not ask that same question again. Phrase the next response differently or move forward.",
