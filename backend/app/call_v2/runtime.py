@@ -30,7 +30,12 @@ from app.call_v2.persistence import (
     SqlAlchemyCallPersistence,
     persist_call_v2_trace_summary,
 )
-from app.call_v2.session import CallSession, CallSessionConfig, CallSessionResult
+from app.call_v2.session import (
+    CallCostRates,
+    CallSession,
+    CallSessionConfig,
+    CallSessionResult,
+)
 from app.call_v2.stt.deepgram import DeepgramStreamingSttEngine
 from app.call_v2.telephony.base import TelephonyAdapter
 from app.call_v2.telephony.exotel import ExotelMediaTelephonyAdapter
@@ -141,6 +146,11 @@ class CallV2RuntimeFactory:
         )
         tts_engine = _tts_engine_from_settings(settings)
         agent_runner: AgentRunner = _agent_runner_from_settings(settings)
+        cost_rates = _build_cost_rates(
+            settings,
+            telephony_provider=provider,
+            tts_provider=getattr(tts_engine, "provider", ""),
+        )
 
         return CallSession(
             config=CallSessionConfig(
@@ -169,6 +179,7 @@ class CallV2RuntimeFactory:
                     if interactive_style_enabled
                     else None
                 ),
+                cost_rates=cost_rates,
             ),
             telephony_adapter=_adapter_for_provider(provider),
             stt_engine=stt_engine,
@@ -974,6 +985,63 @@ def _agent_runner_from_settings(settings) -> AgentRunner:
             api_key=settings.OPENAI_API_KEY,
             model=model,
         )
+    )
+
+
+def _build_cost_rates(
+    settings,
+    *,
+    telephony_provider: str,
+    tts_provider: str,
+) -> CallCostRates:
+    """Resolve provider-aware USD cost rates for one call.
+
+    STT is always Deepgram in v2. Telephony is 0 for the browser simulator.
+    TTS rate depends on the engine actually selected. LLM is 0 on Groq free
+    tier (token-count plumbing does not exist yet, so paid/OpenAI token cost is
+    flagged-but-untracked rather than guessed).
+    """
+    telephony = (telephony_provider or "").lower()
+    if telephony == "exotel":
+        telephony_rate = settings.EXOTEL_ESTIMATED_COST_PER_MINUTE_USD
+    elif telephony == "twilio":
+        telephony_rate = settings.TWILIO_ESTIMATED_COST_PER_MINUTE_USD
+    else:
+        # browser simulator and anything unknown: no telephony charge.
+        telephony_rate = 0.0
+
+    tts = (tts_provider or "").lower()
+    notes: list[str] = []
+    if tts == "sarvam":
+        # ₹/10k chars -> USD/1k chars.
+        tts_rate = (
+            settings.SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS / 10.0
+        ) * settings.SARVAM_INR_TO_USD
+    elif tts == "deepgram":
+        tts_rate = settings.DEEPGRAM_TTS_COST_PER_1K_CHARS_USD
+    else:
+        # OpenAI TTS is token-based and has no per-char config; do not guess.
+        tts_rate = 0.0
+        notes.append(f"tts_rate_unconfigured:{tts or 'unknown'}")
+
+    agent_provider = (settings.AGENT_PROVIDER or "openai").lower()
+    llm_usd = 0.0
+    if agent_provider == "groq":
+        if settings.GROQ_FREE_TIER:
+            notes.append("llm=groq_free_tier")
+        else:
+            # Paid Groq: real per-token cost, but we don't capture token counts
+            # in the v2 agent path yet. Flag it so the $0 is not mistaken for free.
+            notes.append("llm=groq_paid_tokens_untracked")
+    else:
+        notes.append("llm=openai_tokens_untracked")
+
+    return CallCostRates(
+        stt_usd_per_minute=settings.DEEPGRAM_STT_COST_PER_MINUTE_USD,
+        tts_usd_per_1k_chars=tts_rate,
+        telephony_usd_per_minute=telephony_rate,
+        llm_usd=llm_usd,
+        notes=tuple(notes),
     )
 
 

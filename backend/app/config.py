@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     GROQ_AGENT_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    # Groq token pricing (llama-4-scout-17b on-demand, May 2026): $0.11/1M in,
+    # $0.34/1M out. We are currently on the FREE tier where tokens are not
+    # billed — keep GROQ_FREE_TIER=True so the cost tracker records $0 for the
+    # LLM. Flip to False (and ensure token usage is captured) when moving to a
+    # paid plan. Source: https://groq.com/pricing
+    GROQ_FREE_TIER: bool = True
+    GROQ_AGENT_INPUT_COST_PER_1M: float = 0.11
+    GROQ_AGENT_OUTPUT_COST_PER_1M: float = 0.34
 
     # --- OpenAI ---
     OPENAI_API_KEY: str = ""
@@ -64,7 +72,9 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_MODEL_BROWSER: str = "nova-3"
     DEEPGRAM_STT_LANGUAGE: str = "en-IN"   # Indian English accent model
     DEEPGRAM_TTS_MODEL: str = "aura-asteria-en"
-    DEEPGRAM_STT_COST_PER_MINUTE_USD: float = 0.0043
+    # nova-2 tier streaming pay-as-you-go (May 2026). nova-3 streaming is
+    # $0.0077/min. Source: https://deepgram.com/pricing
+    DEEPGRAM_STT_COST_PER_MINUTE_USD: float = 0.0058
     DEEPGRAM_TTS_COST_PER_1K_CHARS_USD: float = 0.03
 
     # --- Sarvam ---
@@ -80,7 +90,12 @@ class Settings(BaseSettings):
     SARVAM_TTS_WEBSOCKET_URL: str = "wss://api.sarvam.ai/text-to-speech/ws"
     SARVAM_TTS_FIRST_BYTE_TIMEOUT_SECONDS: float = 2.0
     SARVAM_TTS_COMPLETION_TIMEOUT_SECONDS: float = 15.0
+    # bulbul:v3 list price ₹30 / 10k chars (bulbul:v2 is ₹15). Verified May
+    # 2026: https://www.sarvam.ai/api-pricing
     SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS: float = 30.0
+    # INR -> USD conversion used to express Sarvam's rupee pricing in the USD
+    # cost tracker. Update when the exchange rate drifts materially.
+    SARVAM_INR_TO_USD: float = 0.0117
     PIPELINE_FILLERS_ENABLED: bool = False   # set True to re-enable filler phrases
     PIPELINE_TTS_JITTER_BUFFER_MS: int = 200
     PIPELINE_STT_ENDPOINTING_MS: int = 500    # Deepgram server-side silence before utterance_ended fires
@@ -119,7 +134,11 @@ class Settings(BaseSettings):
     EXOTEL_PHONE_NUMBER: str = ""
     EXOTEL_SUBDOMAIN: str = "api.exotel.com"
     EXOTEL_FLOW_URL: str = ""
-    EXOTEL_ESTIMATED_COST_PER_MINUTE_USD: float = 0.005
+    # Exotel does not publish a flat per-minute rate — it is contract/region
+    # specific and billed on a 30s/60s pulse (rounds up). This is an ESTIMATE
+    # (~₹0.70/min at SARVAM_INR_TO_USD); replace with your actual contract rate.
+    # Note: duration-based math here under-counts short calls vs. pulse billing.
+    EXOTEL_ESTIMATED_COST_PER_MINUTE_USD: float = 0.0082
     EXOTEL_VALIDATE_SIGNATURES: bool = False
 
     # --- Runtime selection ---

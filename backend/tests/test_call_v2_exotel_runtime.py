@@ -22,6 +22,7 @@ from app.call_v2.runtime import (
     build_agent_config,
     build_deepgram_keyterms,
     _adapter_for_provider,
+    _build_cost_rates,
 )
 from app.call_v2.stt.deepgram import DeepgramStreamingSttEngine
 from app.call_v2.telephony.exotel import ExotelMediaTelephonyAdapter
@@ -226,6 +227,13 @@ async def test_exotel_runtime_disables_raw_audio_tentative_cancellation(monkeypa
         GROQ_API_KEY = ""
         GROQ_AGENT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
         GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+        GROQ_FREE_TIER = True
+        DEEPGRAM_STT_COST_PER_MINUTE_USD = 0.0058
+        DEEPGRAM_TTS_COST_PER_1K_CHARS_USD = 0.03
+        SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS = 30.0
+        SARVAM_INR_TO_USD = 0.0117
+        EXOTEL_ESTIMATED_COST_PER_MINUTE_USD = 0.0082
+        TWILIO_ESTIMATED_COST_PER_MINUTE_USD = 0.013
 
     monkeypatch.setattr("app.call_v2.runtime.get_settings", lambda: _Settings())
 
@@ -313,6 +321,13 @@ async def test_browser_runtime_uses_browser_simulator_adapter(monkeypatch):
         GROQ_API_KEY = ""
         GROQ_AGENT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
         GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+        GROQ_FREE_TIER = True
+        DEEPGRAM_STT_COST_PER_MINUTE_USD = 0.0058
+        DEEPGRAM_TTS_COST_PER_1K_CHARS_USD = 0.03
+        SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS = 30.0
+        SARVAM_INR_TO_USD = 0.0117
+        EXOTEL_ESTIMATED_COST_PER_MINUTE_USD = 0.0082
+        TWILIO_ESTIMATED_COST_PER_MINUTE_USD = 0.013
 
     monkeypatch.setattr("app.call_v2.runtime.get_settings", lambda: _Settings())
 
@@ -381,3 +396,68 @@ async def test_browser_media_route_hands_resume_uuid_to_v2_runtime(monkeypatch):
     await browser_webhooks.browser_media_stream(ws, resume_id=str(resume_id))
 
     assert calls == [(resume_id, "browser")]
+
+
+# ---------------------------------------------------------------------------
+# Cost rate resolution
+# ---------------------------------------------------------------------------
+
+
+def _cost_settings(**overrides):
+    base = SimpleNamespace(
+        DEEPGRAM_STT_COST_PER_MINUTE_USD=0.0058,
+        DEEPGRAM_TTS_COST_PER_1K_CHARS_USD=0.03,
+        SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS=30.0,
+        SARVAM_INR_TO_USD=0.0117,
+        EXOTEL_ESTIMATED_COST_PER_MINUTE_USD=0.0082,
+        TWILIO_ESTIMATED_COST_PER_MINUTE_USD=0.013,
+        AGENT_PROVIDER="groq",
+        GROQ_FREE_TIER=True,
+    )
+    for key, value in overrides.items():
+        setattr(base, key, value)
+    return base
+
+
+def test_build_cost_rates_exotel_sarvam_groq_free():
+    rates = _build_cost_rates(
+        _cost_settings(),
+        telephony_provider="exotel",
+        tts_provider="sarvam",
+    )
+    assert rates.stt_usd_per_minute == 0.0058
+    assert rates.telephony_usd_per_minute == 0.0082
+    # sarvam: (30/10) * 0.0117 = 0.0351 per 1k chars
+    assert rates.tts_usd_per_1k_chars == 0.0351
+    assert rates.llm_usd == 0.0
+    assert "llm=groq_free_tier" in rates.notes
+
+
+def test_build_cost_rates_browser_has_no_telephony_charge():
+    rates = _build_cost_rates(
+        _cost_settings(),
+        telephony_provider="browser",
+        tts_provider="sarvam",
+    )
+    assert rates.telephony_usd_per_minute == 0.0
+
+
+def test_build_cost_rates_paid_groq_is_flagged_not_silently_zero():
+    rates = _build_cost_rates(
+        _cost_settings(GROQ_FREE_TIER=False),
+        telephony_provider="exotel",
+        tts_provider="sarvam",
+    )
+    assert rates.llm_usd == 0.0
+    assert "llm=groq_paid_tokens_untracked" in rates.notes
+
+
+def test_build_cost_rates_unconfigured_tts_provider_is_flagged():
+    rates = _build_cost_rates(
+        _cost_settings(AGENT_PROVIDER="openai"),
+        telephony_provider="exotel",
+        tts_provider="openai",
+    )
+    assert rates.tts_usd_per_1k_chars == 0.0
+    assert any(note.startswith("tts_rate_unconfigured") for note in rates.notes)
+    assert "llm=openai_tokens_untracked" in rates.notes

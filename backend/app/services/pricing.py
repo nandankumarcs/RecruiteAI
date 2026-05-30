@@ -70,10 +70,10 @@ def estimate_sarvam_tts_cost(*, characters: int | None) -> float:
     Sarvam pricing is in INR, converted to USD at approximate rate.
     """
     chars = _safe_float(characters)
-    # Sarvam: ₹30 per 10K chars for bulbul:v3
-    # Approximate conversion: ₹1 = $0.012 USD (adjust as needed)
+    # Sarvam: ₹30 per 10K chars for bulbul:v3. FX factor lives in config
+    # (SARVAM_INR_TO_USD) instead of a magic number here.
     inr_cost = (chars / 10_000.0) * settings.SARVAM_ESTIMATED_COST_INR_PER_10K_CHARS
-    usd_cost = inr_cost * 0.012  # INR to USD conversion
+    usd_cost = inr_cost * settings.SARVAM_INR_TO_USD
     return _round_currency(usd_cost)
 
 

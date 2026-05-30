@@ -58,6 +58,29 @@ from app.call_v2.turns.endpointing import EndpointingController, EndpointingSett
 CachePolicySelector = Callable[[AgentOutput], CachePolicy]
 
 
+@dataclass(frozen=True, slots=True)
+class CallCostRates:
+    """Pre-resolved USD cost rates for one call.
+
+    The runtime factory derives these from settings (provider-aware: e.g.
+    telephony is 0 for the browser simulator, TTS rate depends on the chosen
+    provider). The session multiplies accumulated usage by these rates once at
+    end() and records them via persistence.record_cost_metric. Keeping the math
+    as plain floats here (rather than reaching into settings) keeps the session
+    pure and unit-testable. cost_rates=None disables cost recording entirely,
+    which is the default for tests that don't care about cost.
+    """
+
+    stt_usd_per_minute: float = 0.0
+    tts_usd_per_1k_chars: float = 0.0
+    telephony_usd_per_minute: float = 0.0
+    # Flat per-call LLM cost. 0.0 on Groq free tier (tokens not billed). We do
+    # not yet thread token counts through the agent path, so this stays a flat
+    # figure until that plumbing exists — see runtime._build_cost_rates.
+    llm_usd: float = 0.0
+    notes: tuple[str, ...] = ()
+
+
 @dataclass(slots=True)
 class CallSessionConfig:
     agent_config: AgentConfig
@@ -77,6 +100,9 @@ class CallSessionConfig:
     silence_endcall_ms: int = 20000
     silence_nudge_phrases: dict[int, str] | None = None
     silence_endcall_phrase: str | None = None
+    # Per-call USD cost rates. None disables cost recording (default for tests).
+    # Populated by the runtime factory from settings.
+    cost_rates: CallCostRates | None = None
 
 
 @dataclass(slots=True)
@@ -165,6 +191,13 @@ class CallSession:
         # don't re-fire the same level on every advance_time tick.
         self._silence_started_at_ms: int | None = None
         self._nudge_stage: int = 0
+        # Cost-tracking accumulators. _call_started_at_ms anchors duration for
+        # the per-minute STT/telephony estimates; _tts_characters sums every
+        # character we synthesize (opener + agent replies + silence nudges +
+        # end-call), incremented at the single _commit_assistant_turn chokepoint.
+        # Costs are computed once in end() against config.cost_rates.
+        self._call_started_at_ms: int | None = None
+        self._tts_characters: int = 0
         self._transition(CallRuntimeState.WAITING_FOR_STREAM, "session_created")
 
     async def handle_telephony_message(
@@ -197,6 +230,7 @@ class CallSession:
         if isinstance(event, TelephonyStreamStarted):
             self.identity = event.identity
             self.outbound_format = event.outbound_format
+            self._call_started_at_ms = now_ms
             await self.persistence.mark_call_started(
                 identity=event.identity,
                 started_at_ms=now_ms,
@@ -559,12 +593,52 @@ class CallSession:
                 if not task.done():
                     task.cancel()
             await self.stt_engine.close()
+            await self._record_costs(now_ms=now_ms)
             await self.persistence.mark_call_ended(
                 ended_at_ms=now_ms,
                 reason=reason,
             )
             self._transition(CallRuntimeState.ENDED, reason)
         return CallSessionResult(end_call=True)
+
+    async def _record_costs(self, *, now_ms: int) -> None:
+        """Estimate and persist per-component costs for the call.
+
+        Runs once from end(). STT and telephony are billed per minute against
+        call duration; TTS is billed per synthesized character; LLM is a flat
+        figure (0.0 on Groq free tier). No-op when cost_rates is unset.
+        """
+        rates = self.config.cost_rates
+        if rates is None:
+            return
+        duration_minutes = 0.0
+        if self._call_started_at_ms is not None:
+            duration_ms = max(0, now_ms - self._call_started_at_ms)
+            duration_minutes = duration_ms / 60_000.0
+
+        stt_usd = duration_minutes * rates.stt_usd_per_minute
+        telephony_usd = duration_minutes * rates.telephony_usd_per_minute
+        tts_usd = (self._tts_characters / 1000.0) * rates.tts_usd_per_1k_chars
+
+        await self.persistence.record_cost_metric(name="stt_usd", amount_usd=stt_usd)
+        await self.persistence.record_cost_metric(name="tts_usd", amount_usd=tts_usd)
+        await self.persistence.record_cost_metric(
+            name="telephony_usd", amount_usd=telephony_usd
+        )
+        await self.persistence.record_cost_metric(
+            name="llm_usd", amount_usd=rates.llm_usd
+        )
+        logger.info(
+            "cost.recorded call=%s duration_min=%.3f tts_chars=%d "
+            "stt_usd=%.6f tts_usd=%.6f telephony_usd=%.6f llm_usd=%.6f",
+            self.config.call_id,
+            duration_minutes,
+            self._tts_characters,
+            stt_usd,
+            tts_usd,
+            telephony_usd,
+            rates.llm_usd,
+        )
 
     async def _handle_transcript_barge_in(
         self,
@@ -853,6 +927,10 @@ class CallSession:
         text: str,
         committed_at_ms: int,
     ) -> None:
+        # Single chokepoint for everything we synthesize (opener, agent
+        # replies, silence nudges, end-call closer) — accumulate characters
+        # here for the TTS cost estimate computed in end().
+        self._tts_characters += len(text or "")
         assistant_commit = await self.persistence.commit_transcript_turn(
             generation_id=generation_id,
             role="assistant",

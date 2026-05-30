@@ -23,7 +23,7 @@ from app.call_v2.events import (
     TimestampMetadata,
 )
 from app.call_v2.persistence import FakeCallPersistence
-from app.call_v2.session import CallSession, CallSessionConfig
+from app.call_v2.session import CallCostRates, CallSession, CallSessionConfig
 from app.call_v2.state import CallRuntimeState
 from app.call_v2.stt.fake import FakeSttEngine
 from app.call_v2.telephony.simulator import BrowserSimulatorTelephonyAdapter
@@ -62,6 +62,7 @@ def _session(
     *,
     agent_outputs: list[dict],
     tts_payload: bytes = b"\x00\x01" * 160,
+    cost_rates: CallCostRates | None = None,
 ):
     persistence = FakeCallPersistence()
     tts = FakeTtsEngine(payload=tts_payload)
@@ -77,6 +78,7 @@ def _session(
             cache_policy_selector=lambda _output: CachePolicy(
                 category="clarification_response"
             ),
+            cost_rates=cost_rates,
         ),
         telephony_adapter=BrowserSimulatorTelephonyAdapter(),
         stt_engine=FakeSttEngine(
@@ -881,3 +883,114 @@ async def test_silence_full_escalation_ladder_within_20s_budget():
     assert len(result.outbound_audio_frames) > 0
     assert session._end_after_speaking is True
     assert session._end_after_speaking_reason == "silence_timeout"
+
+
+# ---------------------------------------------------------------------------
+# Cost tracking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cost_recording_disabled_when_no_rates():
+    # cost_rates=None (the default) must leave the breakdown untouched so tests
+    # and any future caller that doesn't supply rates pay no cost-recording tax.
+    session, persistence, _tts = _session(agent_outputs=[])
+    await _start_stream(session)
+
+    await session.end(reason="test", now_ms=60_000)
+
+    assert persistence.cost_breakdown == {}
+
+
+@pytest.mark.asyncio
+async def test_cost_recording_tracks_duration_tts_chars_and_llm():
+    # sarvam TTS: (₹30/10k)/10 * 0.0117 INR->USD = 0.0351 USD per 1k chars.
+    rates = CallCostRates(
+        stt_usd_per_minute=0.0058,
+        tts_usd_per_1k_chars=0.0351,
+        telephony_usd_per_minute=0.0082,
+        llm_usd=0.0,
+        notes=("llm=groq_free_tier",),
+    )
+    opener = "Hi, this is a screening call. May I continue?"
+    reply = "Thanks. What was the hardest part?"
+    session, persistence, _tts = _session(
+        agent_outputs=[
+            {
+                "spoken_text": opener,
+                "action": "continue",
+                "tool_calls": [],
+                "state_updates": {},
+            },
+            {
+                "spoken_text": reply,
+                "action": "continue",
+                "tool_calls": [],
+                "state_updates": {},
+            },
+        ],
+        cost_rates=rates,
+    )
+    await _start_stream(session)  # now_ms=0 anchors call start
+    await session.start_runtime_opener(now_ms=50)
+    await session.handle_stt_event(_final("I built APIs"), now_ms=100)
+    await session.handle_stt_event(_endpoint("I built APIs"), now_ms=600)
+    await session.advance_time(700)
+
+    # End exactly one minute in so the per-minute components equal their rates.
+    await session.end(reason="test", now_ms=60_000)
+
+    # Only synthesized (assistant) text counts — opener + reply, not the user turn.
+    expected_chars = len(opener) + len(reply)
+    assert session._tts_characters == expected_chars
+
+    costs = persistence.cost_breakdown["costs"]
+    assert costs["stt_usd"] == 0.0058
+    assert costs["telephony_usd"] == 0.0082
+    assert costs["llm_usd"] == 0.0
+    assert costs["tts_usd"] == round(expected_chars / 1000.0 * 0.0351, 6)
+    assert persistence.cost_breakdown["estimated_total_usd"] == round(
+        sum(costs.values()), 6
+    )
+    assert persistence.cost_breakdown["runtime"] == "call_v2"
+
+
+@pytest.mark.asyncio
+async def test_cost_recording_counts_silence_nudge_characters():
+    # Silence nudges are synthesized too, so their characters must be billed.
+    nudge = "Are you still there?"
+    rates = CallCostRates(tts_usd_per_1k_chars=0.0351)
+    session, persistence, _tts = _session(agent_outputs=[], cost_rates=rates)
+    session.config.silence_nudge_phrases = {1: nudge}
+
+    # Drive into the post-TTS guard (AI finished the opener), then go silent
+    # past the stage-1 threshold so the nudge synthesizes.
+    await _drive_into_post_tts_guard(session, now_ms=0)
+    await session.advance_time(session.config.silence_nudge_ms + 1)
+    assert session._nudge_stage == 1
+    assert session._tts_characters == len(nudge)
+
+    await session.end(reason="test", now_ms=60_000)
+    assert persistence.cost_breakdown["costs"]["tts_usd"] == round(
+        len(nudge) / 1000.0 * 0.0351, 6
+    )
+
+
+@pytest.mark.asyncio
+async def test_cost_recording_zero_duration_call_has_no_per_minute_cost():
+    # A call that never streams audio (no start anchor) bills 0 for per-minute
+    # components and 0 TTS chars, but still records a (zero) llm figure.
+    rates = CallCostRates(
+        stt_usd_per_minute=0.0058,
+        telephony_usd_per_minute=0.0082,
+        llm_usd=0.0,
+    )
+    session, persistence, _tts = _session(agent_outputs=[], cost_rates=rates)
+
+    await session.end(reason="test", now_ms=60_000)
+
+    costs = persistence.cost_breakdown["costs"]
+    assert costs["stt_usd"] == 0.0
+    assert costs["telephony_usd"] == 0.0
+    assert costs["tts_usd"] == 0.0
+    assert costs["llm_usd"] == 0.0
