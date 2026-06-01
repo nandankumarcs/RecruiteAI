@@ -30,7 +30,7 @@ AI-powered recruitment platform for automated telephonic interviews — job setu
 ### 1. Clone
 
 ```bash
-git clone https://github.com/nandankmr/RecruiteAI.git
+git clone https://github.com/nandankumarcs/RecruiteAI.git
 cd RecruiteAI
 ```
 
