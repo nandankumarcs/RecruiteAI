@@ -6,27 +6,31 @@ AI-powered recruitment platform for automated telephonic interviews — job setu
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 18, Vite, TypeScript, Tailwind CSS, shadcn/ui |
+| Frontend | React 19, Vite, TypeScript, Tailwind v4, shadcn/ui |
 | Backend | FastAPI, SQLAlchemy 2 (async), PostgreSQL, Alembic |
-| AI | OpenAI API (GPT-4o, Realtime API), LangChain |
-| Telephony | Twilio / Exotel with media streaming |
-| STT/TTS | Deepgram, Sarvam |
+| LLM (live calls) | Groq — llama-4-scout-17b |
+| LLM (async agents) | OpenAI — gpt-4o-mini |
+| Telephony | Exotel / Twilio (mock mode for local dev) |
+| STT | Deepgram nova-2 |
+| TTS | Sarvam bulbul:v3 / Deepgram Aura |
+
+---
 
 ## Prerequisites
 
 - **Python 3.13** (3.14+ not supported — pydantic-core build fails)
 - **Node.js 20+**
-- **PostgreSQL** running and accessible
-- **ngrok** (only needed for live telephony calls)
+- **PostgreSQL** running locally
+- **ngrok** — only needed for live telephony calls
 
 ---
 
-## Quick Start
+## Setup
 
 ### 1. Clone
 
 ```bash
-git clone https://github.com/nandankumarcs/RecruiteAI.git
+git clone https://github.com/nandankmr/RecruiteAI.git
 cd RecruiteAI
 ```
 
@@ -35,7 +39,7 @@ cd RecruiteAI
 ```bash
 cd backend
 
-# Create virtualenv with Python 3.13
+# Create virtualenv (Python 3.13 required)
 python3.13 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
@@ -44,81 +48,82 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env — fill in DATABASE_URL, SECRET_KEY, OPENAI_API_KEY at minimum
+# Edit .env — see Environment Variables below
 
-# Run database migrations
+# Create the database
+createdb recruiteai
+
+# Run migrations
 alembic upgrade head
 
 # Start server
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Backend runs at: `http://localhost:8000`
-API docs at: `http://localhost:8000/docs`
+Backend: `http://localhost:8000`  
+API docs: `http://localhost:8000/docs`
 
 ### 3. Frontend
 
 ```bash
 cd frontend
-
 npm install
-
-# Configure environment
-cp .env.example .env.local
-# Edit .env.local — set VITE_API_URL=http://localhost:8000/api
-
 npm run dev
 ```
 
-Frontend runs at: `http://localhost:5173`
+Frontend: `http://localhost:5173`
 
 ---
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` in the `backend/` directory. Fields marked **[REQUIRED]** must be set before the app will start.
+Create `backend/.env` by copying `backend/.env.example`. The minimum required to get the app running locally:
 
 ### Required
 
 | Variable | Description |
 |----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string e.g. `postgresql+asyncpg://user:pass@localhost:5432/recruiteai` |
-| `SECRET_KEY` | JWT signing key — generate with `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `OPENAI_API_KEY` | OpenAI API key |
+| `DATABASE_URL` | e.g. `postgresql+asyncpg://postgres:postgres@localhost:5432/recruiteai` |
+| `SECRET_KEY` | JWT signing key — `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `OPENAI_API_KEY` | Used for resume parsing, evaluation, and question generation |
 
-### Telephony (set one provider)
-
-| Variable | Description |
-|----------|-------------|
-| `TELEPHONY_PROVIDER` | `twilio`, `exotel`, or `mock` (default: `mock` for local dev) |
-| `TWILIO_ACCOUNT_SID` | Twilio account SID |
-| `TWILIO_AUTH_TOKEN` | Twilio auth token |
-| `TWILIO_PHONE_NUMBER` | Twilio outbound number |
-| `EXOTEL_ACCOUNT_SID` | Exotel account SID |
-| `EXOTEL_API_KEY` | Exotel API key |
-| `EXOTEL_API_TOKEN` | Exotel API token |
-| `EXOTEL_PHONE_NUMBER` | Exotel outbound number |
-| `EXOTEL_FLOW_URL` | Exotel ExoML flow URL for your account |
-
-### App URLs (required for live telephony)
+### LLM Provider (live calls)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PUBLIC_URL` | `http://localhost:8000` | Publicly reachable backend URL (use ngrok URL for local live calls) |
-| `FRONTEND_URL` | `http://localhost:5173` | Frontend URL (used for CORS) |
+| `AGENT_PROVIDER` | `openai` | Set to `groq` to use Groq for live call agent |
+| `GROQ_API_KEY` | — | Required if `AGENT_PROVIDER=groq` |
+| `GROQ_AGENT_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | Groq model |
+| `GROQ_FREE_TIER` | `True` | Set to `False` when on a paid Groq plan |
 
-### STT / TTS
+### Voice Pipeline
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEEPGRAM_API_KEY` | — | Required if using Deepgram STT/TTS |
-| `SARVAM_API_KEY` | — | Required if `TTS_PROVIDER=sarvam` |
-| `VOICE_RUNTIME` | `deepgram_openai` | `openai_realtime` or `deepgram_openai` |
+| `VOICE_RUNTIME` | `deepgram_openai` | `deepgram_openai` (Deepgram STT + TTS) or `openai_realtime` |
 | `TTS_PROVIDER` | `deepgram` | `deepgram` or `sarvam` |
+| `STT_PROVIDER` | `deepgram` | `deepgram` |
+| `DEEPGRAM_API_KEY` | — | Required for STT (and TTS if `TTS_PROVIDER=deepgram`) |
+| `SARVAM_API_KEY` | — | Required if `TTS_PROVIDER=sarvam` |
+
+### Telephony
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEPHONY_PROVIDER` | `mock` | `exotel`, `twilio`, or `mock` |
+| `PUBLIC_URL` | `http://localhost:8000` | Public HTTPS URL for webhooks (ngrok for local live calls) |
+| `EXOTEL_ACCOUNT_SID` | — | Exotel credentials |
+| `EXOTEL_API_KEY` | — | |
+| `EXOTEL_API_TOKEN` | — | |
+| `EXOTEL_PHONE_NUMBER` | — | Outbound number |
+| `EXOTEL_FLOW_URL` | — | ExoML flow URL |
+| `TWILIO_ACCOUNT_SID` | — | Twilio credentials (if using Twilio) |
+| `TWILIO_AUTH_TOKEN` | — | |
+| `TWILIO_PHONE_NUMBER` | — | |
 
 ### Seed User
 
-On first startup the backend creates a default user from these values:
+On first startup the backend seeds a default login:
 
 | Variable | Default |
 |----------|---------|
@@ -126,42 +131,68 @@ On first startup the backend creates a default user from these values:
 | `SEED_USER_PASSWORD` | `ChangeMe123!` |
 | `SEED_USER_NAME` | `Admin User` |
 
-Change these in `.env` before running for the first time.
+Change these in `.env` before running for the first time, or update the password after first login.
+
+### Storage
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STORAGE_PROVIDER` | `local` | `local` (uploads/) or `s3` |
+| `AWS_ACCESS_KEY_ID` | — | Required if `STORAGE_PROVIDER=s3` |
+| `AWS_SECRET_ACCESS_KEY` | — | |
+| `AWS_S3_BUCKET` | — | |
+| `AWS_S3_REGION` | — | |
 
 ---
 
-## Running Without Real Phone Calls (Mock Mode)
+## Local Development Modes
 
-Set `TELEPHONY_PROVIDER=mock` in `.env`. The backend will simulate call progression and generate a sample transcript — no Twilio/Exotel credentials needed.
+### Mock mode (no phone credentials needed)
 
----
+```env
+TELEPHONY_PROVIDER=mock
+AGENT_PROVIDER=openai   # or groq
+```
 
-## Running Live Calls Locally (ngrok)
+Simulates call progression and generates a sample transcript. Good for testing the full flow without any telephony setup.
 
-Live telephony requires a public HTTPS endpoint for webhooks and media streaming.
+### Browser simulator (real audio, no phone)
+
+```env
+TELEPHONY_PROVIDER=mock
+CALL_V2_SIMULATOR_ENABLED=true
+```
+
+Opens an in-browser mic/speaker session so you can speak to the AI interviewer directly. No Exotel/Twilio account needed.
+
+### Live calls (Exotel/Twilio)
 
 ```bash
 # 1. Start ngrok
 ngrok http 8000
 
-# 2. Update .env
+# 2. Set in .env
 PUBLIC_URL=https://your-subdomain.ngrok-free.app
+TELEPHONY_PROVIDER=exotel   # or twilio
 
 # 3. Restart backend
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The app passes all webhook URLs dynamically when placing calls — no manual Twilio/Exotel dashboard config needed for outbound-only testing.
+Webhook URLs are passed dynamically per call — no manual dashboard configuration needed.
 
 ---
 
-## Running Tests
+## Tests
 
 ```bash
 # Backend
 cd backend
 source venv/bin/activate
 pytest
+
+# Run a specific test
+pytest tests/test_call_v2_session.py -xvs
 
 # Frontend type-check
 cd frontend
@@ -170,15 +201,11 @@ npm run build
 
 ---
 
-## Storage
+## Company Name in Calls
 
-Resumes are stored locally under `backend/uploads/` by default (`STORAGE_PROVIDER=local`).
+Set `COMPANY_NAME` in `.env` to customise the call opener:
 
-For S3, set:
-```
-STORAGE_PROVIDER=s3
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-AWS_S3_BUCKET=...
-AWS_S3_REGION=...
+```env
+COMPANY_NAME=Acme Corp
+# "Hello, this is a call from Acme Corp..."
 ```

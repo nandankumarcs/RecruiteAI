@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Second Brain
+This project's knowledge base lives in the Obsidian vault at `~/Documents/SecondBrain/Projects/RecruiteAI/`.
+**At session start**: read `Projects/RecruiteAI/index.md` and the latest `Projects/RecruiteAI/Sessions/` log via the `obsidian` MCP tool.
+**At session end**: write a session log and update the project index. See `~/.claude/CLAUDE.md` for the full protocol.
+
 ## Repo layout
 
 Monorepo with two top-level apps:

@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { Calendar, ChevronLeft, Download, PhoneCall, UploadCloud } from "lucide-react";
+import { Calendar, ChevronLeft, Download, PhoneCall, UploadCloud, X } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { CallRecord } from "@/lib/calls";
@@ -21,6 +21,7 @@ import type { Job } from "@/lib/jobs";
 import { useToast } from "@/context/ToastContext";
 import { motion, AnimatePresence } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Markdown } from "@/components/ui/Markdown";
 
 
@@ -29,6 +30,13 @@ type DetailTab = "resumes" | "calls" | "strategy" | "details";
 type ResumeSortBy = "matching_score" | "candidate_name" | "status" | "created_at";
 type CallSortBy = "created_at" | "status" | "phone_number";
 type SortOrder = "asc" | "desc";
+
+interface ResumeFilters {
+  name: string;
+  email: string;
+  uploadedFrom: string; // YYYY-MM-DD
+  uploadedTo: string;   // YYYY-MM-DD
+}
 
 const resumeSortKeys: ResumeSortBy[] = ["matching_score", "candidate_name", "status", "created_at"];
 const callSortKeys: CallSortBy[] = ["created_at", "status", "phone_number"];
@@ -63,6 +71,7 @@ export function JobDetail() {
   const [pageSize] = useState(20);
   const [sortBy, setSortBy] = useState<ResumeSortBy>("matching_score");
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
+  const [filters, setFilters] = useState<ResumeFilters>({ name: "", email: "", uploadedFrom: "", uploadedTo: "" });
 
   const [totalCalls, setTotalCalls] = useState(0);
   const [completedCallsCount, setCompletedCallsCount] = useState(0);
@@ -71,11 +80,25 @@ export function JobDetail() {
   const [callsSortBy, setCallsSortBy] = useState<CallSortBy>("created_at");
   const [callsSortOrder, setCallsSortOrder] = useState<SortOrder>("desc");
 
-  const fetchResumes = useCallback(async (page: number, sb: ResumeSortBy, so: SortOrder) => {
+  const fetchResumes = useCallback(async (
+    page: number,
+    sb: ResumeSortBy,
+    so: SortOrder,
+    f: ResumeFilters = filters,
+  ) => {
     if (!jobId) return;
     try {
       const res = await api.get(`/jobs/${jobId}/resumes`, {
-        params: { page, page_size: pageSize, sort_by: sb, sort_order: so },
+        params: {
+          page,
+          page_size: pageSize,
+          sort_by: sb,
+          sort_order: so,
+          ...(f.name ? { name: f.name } : {}),
+          ...(f.email ? { email: f.email } : {}),
+          ...(f.uploadedFrom ? { uploaded_from: f.uploadedFrom } : {}),
+          ...(f.uploadedTo ? { uploaded_to: f.uploadedTo } : {}),
+        },
       });
       setResumes(res.data.items);
       setTotalResumes(res.data.total);
@@ -83,7 +106,7 @@ export function JobDetail() {
       console.error("Failed to fetch resumes", error);
       toast({ variant: "error", title: "Couldn't load candidates", description: "Try refreshing the page." });
     }
-  }, [jobId, pageSize, toast]);
+  }, [jobId, pageSize, toast, filters]);
 
   const fetchJobData = useCallback(async () => {
     if (!jobId) return;
@@ -136,6 +159,26 @@ export function JobDetail() {
     setCurrentPage(newPage);
     void fetchResumes(newPage, sortBy, sortOrder);
   }, [fetchResumes, sortBy, sortOrder]);
+
+  const handleFilterChange = useCallback((patch: Partial<ResumeFilters>) => {
+    const next = { ...filters, ...patch };
+    setFilters(next);
+    setCurrentPage(1);
+    void fetchResumes(1, sortBy, sortOrder, next);
+  }, [fetchResumes, filters, sortBy, sortOrder]);
+
+  const hasActiveFilters = filters.name || filters.email || filters.uploadedFrom || filters.uploadedTo;
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleTextFilterChange = useCallback((patch: Partial<ResumeFilters>) => {
+    const next = { ...filters, ...patch };
+    setFilters(next);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setCurrentPage(1);
+      void fetchResumes(1, sortBy, sortOrder, next);
+    }, 350);
+  }, [fetchResumes, filters, sortBy, sortOrder]);
 
   const fetchCalls = useCallback(async (page: number, sb: CallSortBy, so: SortOrder) => {
     if (!jobId) return;
@@ -232,6 +275,14 @@ export function JobDetail() {
     try {
       const response = await api.get(`/jobs/${jobId}/resumes/export`, {
         responseType: "blob",
+        params: {
+          sort_by: sortBy,
+          sort_order: sortOrder,
+          ...(filters.name ? { name: filters.name } : {}),
+          ...(filters.email ? { email: filters.email } : {}),
+          ...(filters.uploadedFrom ? { uploaded_from: filters.uploadedFrom } : {}),
+          ...(filters.uploadedTo ? { uploaded_to: filters.uploadedTo } : {}),
+        },
       });
       const blob = new Blob([response.data], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -400,6 +451,54 @@ export function JobDetail() {
                       </Badge>
                     </div>
                   </div>
+
+                  {/* Filter bar */}
+                  <div className="flex flex-wrap items-center gap-2 px-2">
+                    <Input
+                      placeholder="Name"
+                      value={filters.name}
+                      onChange={(e) => handleTextFilterChange({ name: e.target.value })}
+                      className="h-8 w-40 text-xs rounded-lg border-border/50 bg-muted/30"
+                    />
+                    <Input
+                      placeholder="Email"
+                      value={filters.email}
+                      onChange={(e) => handleTextFilterChange({ email: e.target.value })}
+                      className="h-8 w-44 text-xs rounded-lg border-border/50 bg-muted/30"
+                    />
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="date"
+                        title="Uploaded from"
+                        value={filters.uploadedFrom}
+                        onChange={(e) => handleFilterChange({ uploadedFrom: e.target.value })}
+                        className="h-8 w-36 text-xs rounded-lg border-border/50 bg-muted/30"
+                      />
+                      <span className="text-xs text-muted-foreground font-bold">–</span>
+                      <Input
+                        type="date"
+                        title="Uploaded to"
+                        value={filters.uploadedTo}
+                        onChange={(e) => handleFilterChange({ uploadedTo: e.target.value })}
+                        className="h-8 w-36 text-xs rounded-lg border-border/50 bg-muted/30"
+                      />
+                    </div>
+                    {hasActiveFilters && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cleared = { name: "", email: "", uploadedFrom: "", uploadedTo: "" };
+                          setFilters(cleared);
+                          setCurrentPage(1);
+                          void fetchResumes(1, sortBy, sortOrder, cleared);
+                        }}
+                        className="flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-bold text-muted-foreground hover:text-foreground border border-border/40 hover:border-border transition-all bg-muted/20"
+                      >
+                        <X className="h-3 w-3" /> Clear
+                      </button>
+                    )}
+                  </div>
+
                   <ResumeTable
                     resumes={resumes}
                     activeCallsByResumeId={activeCallsByResumeId}

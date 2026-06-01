@@ -13,13 +13,13 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
-from datetime import datetime, UTC
+from datetime import datetime, date, UTC
 from typing import Literal
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
-from sqlalchemy import asc, desc, func, select
+from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.resume_parser_agent import ResumeParserAgent, get_resume_parser_agent
@@ -449,26 +449,54 @@ async def stream_resume_progress(
     )
 
 
+def _build_resume_filters(
+    job_id: uuid.UUID,
+    *,
+    name: str | None,
+    email: str | None,
+    uploaded_from: date | None,
+    uploaded_to: date | None,
+) -> list:
+    filters = [Resume.job_id == job_id]
+    if name:
+        filters.append(Resume.candidate_name.ilike(f"%{name}%"))
+    if email:
+        filters.append(Resume.email.ilike(f"%{email}%"))
+    if uploaded_from:
+        filters.append(Resume.created_at >= datetime.combine(uploaded_from, datetime.min.time()))
+    if uploaded_to:
+        filters.append(Resume.created_at <= datetime.combine(uploaded_to, datetime.max.time()))
+    return filters
+
+
 @router.get("/api/jobs/{job_id}/resumes/export")
 async def export_resumes(
     job_id: uuid.UUID,
+    sort_by: Literal["matching_score", "candidate_name", "status", "created_at"] = Query("matching_score"),
+    sort_order: Literal["asc", "desc"] = Query("desc"),
+    name: str | None = Query(None),
+    email: str | None = Query(None),
+    uploaded_from: date | None = Query(None),
+    uploaded_to: date | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Export all candidates with contact details for a job as an Excel workbook."""
+    """Export filtered + sorted candidates as an Excel workbook."""
     job = await _get_owned_job(job_id, db, current_user)
 
+    filters = _build_resume_filters(job_id, name=name, email=email, uploaded_from=uploaded_from, uploaded_to=uploaded_to)
+    sort_col = getattr(Resume, sort_by)
+    primary_order = desc(sort_col).nullslast() if sort_order == "desc" else asc(sort_col).nullsfirst()
+    secondary_order = desc(Resume.created_at) if sort_by != "created_at" else None
+    order_clauses = [primary_order, secondary_order] if secondary_order is not None else [primary_order]
+
     result = await db.execute(
-        select(Resume)
-        .where(Resume.job_id == job_id)
-        .order_by(desc(Resume.matching_score).nullslast(), desc(Resume.created_at))
+        select(Resume).where(*filters).order_by(*order_clauses)
     )
     resumes = result.scalars().all()
 
     rows = []
     for resume in resumes:
-        if not resume.email and not resume.phone_number:
-            continue
         rows.append(
             [
                 resume.candidate_name or "",
@@ -498,33 +526,31 @@ async def list_resumes(
     page_size: int = Query(20, ge=1, le=100),
     sort_by: Literal["matching_score", "candidate_name", "status", "created_at"] = Query("matching_score"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    name: str | None = Query(None, description="Filter by candidate name (partial match)"),
+    email: str | None = Query(None, description="Filter by email (partial match)"),
+    uploaded_from: date | None = Query(None, description="Filter by upload date (from, inclusive)"),
+    uploaded_to: date | None = Query(None, description="Filter by upload date (to, inclusive)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List resumes for a job with server-side pagination and sorting."""
+    """List resumes for a job with server-side pagination, sorting, and filtering."""
     await _get_owned_job(job_id, db, current_user)
 
     sort_col = getattr(Resume, sort_by)
-    if sort_order == "desc":
-        primary_order = desc(sort_col).nullslast()
-    else:
-        primary_order = asc(sort_col).nullsfirst()
-
+    primary_order = desc(sort_col).nullslast() if sort_order == "desc" else asc(sort_col).nullsfirst()
     secondary_order = desc(Resume.created_at) if sort_by != "created_at" else None
+    order_clauses = [primary_order, secondary_order] if secondary_order is not None else [primary_order]
 
-    base_query = select(Resume).where(Resume.job_id == job_id)
+    filters = _build_resume_filters(job_id, name=name, email=email, uploaded_from=uploaded_from, uploaded_to=uploaded_to)
+    base_query = select(Resume).where(*filters)
 
     count_result = await db.execute(
-        select(func.count()).select_from(Resume).where(Resume.job_id == job_id)
+        select(func.count()).select_from(Resume).where(*filters)
     )
     total = count_result.scalar_one()
 
-    order_clauses = [primary_order, secondary_order] if secondary_order is not None else [primary_order]
     items_result = await db.execute(
-        base_query
-        .order_by(*order_clauses)
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+        base_query.order_by(*order_clauses).offset((page - 1) * page_size).limit(page_size)
     )
     items = items_result.scalars().all()
 
